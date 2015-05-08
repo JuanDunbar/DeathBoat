@@ -9,28 +9,82 @@ var platforms;
 var boot_state = function(game){};
 boot_state.prototype =
 {
-	preload:function(){
+	init:function() {
+		this.input.maxPointers = 1;
+		
+		if(this.game.device.desktop) {
+			this.scale.pageAlignHorizontally = true;
+		}
+	},
+	preload:function() {
+		this.load.image('preloadBar', 'assets/loadbar.png');
+		this.load.image('background', 'assets/loadscreen.png')
+	},
+	create:function() {
+		this.state.start('preload_state');
+	}
+	
+}
+
+//create pre load state
+var preload_state = function(game){
+	this.preloadeBar = null;
+	this.ready = false;
+};
+preload_state.prototype = 
+{
+	preload:function() {
+		this.backgroud = this.add.sprite(0, 0, 'background');
+		this.preloadBar = this.add.sprite(300, 400, 'preloadBar');
+		
+		this.load.setPreloadSprite(this.preloadBar);		
+		
+		this.load.image('play', 'assets/PlayButton.png');
+		this.load.image('sky', 'assets/sky.png');
+	    this.load.image('ground', 'assets/platform.png');
+	    this.load.image('star', 'assets/star.png');
+	    this.load.audio('titleMusic', 'assets/01-Perturbator-Welcome Back.mp3');
+	    this.load.spritesheet('dude', 'assets/dude.png', 32, 48);
+	},
+	create:function() {
+		this.preloadBar.cropEnabled = false;
+	},
+	update:function() {
+		if(this.cache.isSoundDecoded('titleMusic') && this.ready == false) {
+			this.ready = true;
+			this.state.start('menu_state');
+		}
+	}
+}
+
+//create main menu state
+var menu_state = function(game) {
+	this.music  = null;
+	this.play = null;
+};
+menu_state.prototype = 
+{
+	create:function() {
+		this.music = this.add.audio('titleMusic');
+		this.music.play();
+		
+		this.add.sprite(0, 0, 'sky');
+		this.play = this.add.button(200, 100, 'play', this.startGame, this);
 		
 	},
-	create:function(){
+	update:function() {
 		
 	},
-	update:function(){
-		
+	startGame:function(pointer) {
+		this.music.stop();
+		this.state.start('game_state');
 	}
 }
 
 //create main game state
 var game_state = function(game){};
 game_state.prototype = 
-{
-	preload:function(){
-		game.load.image('sky', 'assets/sky.png');
-	    game.load.image('ground', 'assets/platform.png');
-	    game.load.image('star', 'assets/star.png');
-	    game.load.spritesheet('dude', 'assets/dude.png', 32, 48);
-	},
-	
+{	
 	create:function(){
 		//first lets center our canvas
 	    game.stage.scale.pageAlignHorizontally = true;
@@ -132,6 +186,8 @@ function collectStar(player, star) {
 }
 
 game.state.add('boot_state', boot_state);
+game.state.add('preload_state', preload_state);
+game.state.add('menu_state', menu_state);
 game.state.add('game_state', game_state);
 
-game.state.start('game_state');
+game.state.start('boot_state');
