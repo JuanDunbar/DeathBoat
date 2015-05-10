@@ -7,7 +7,7 @@
 *
 * Phaser - http://phaser.io
 *
-* v2.3.0 "Tarabon" - Built: Thu Mar 26 2015 02:36:43
+* v2.4.0 "Katar" - Built: Thu May 07 2015 02:45:49
 *
 * By Richard Davey http://www.photonstorm.com @photonstorm
 *
@@ -283,6 +283,36 @@ PIXI.DisplayObject = function()
     this.worldTransform = new PIXI.Matrix();
 
     /**
+     * The position of the Display Object based on the world transform.
+     * This value is updated at the end of updateTransform and takes all parent transforms into account.
+     *
+     * @property worldPosition
+     * @type Point
+     * @readOnly
+     */
+    this.worldPosition = new PIXI.Point(0, 0);
+
+    /**
+     * The scale of the Display Object based on the world transform.
+     * This value is updated at the end of updateTransform and takes all parent transforms into account.
+     *
+     * @property worldScale
+     * @type Point
+     * @readOnly
+     */
+    this.worldScale = new PIXI.Point(1, 1);
+
+    /**
+     * The rotation of the Display Object, in radians, based on the world transform.
+     * This value is updated at the end of updateTransform and takes all parent transforms into account.
+     *
+     * @property worldRotation
+     * @type Number
+     * @readOnly
+     */
+    this.worldRotation = 0;
+
+    /**
      * cached sin rotation and cos rotation
      *
      * @property _sr
@@ -514,20 +544,37 @@ Object.defineProperty(PIXI.DisplayObject.prototype, 'cacheAsBitmap', {
 });
 
 /*
- * Updates the object transform for rendering
+ * Updates the object transform for rendering.
+ *
+ * If the object has no parent, and no parent parameter is provided, it will default to Phaser.Game.World as the parent.
+ * If that is unavailable the transform fails to take place.
+ *
+ * The `parent` parameter has priority over the actual parent. Use it as a parent override.
+ * Setting it does **not** change the actual parent of this DisplayObject, it just uses the parent for the transform update.
  *
  * @method updateTransform
- * @private
+ * @param {DisplayObject} [parent] - Optional parent to parent this DisplayObject transform from.
  */
-PIXI.DisplayObject.prototype.updateTransform = function()
+PIXI.DisplayObject.prototype.updateTransform = function(parent)
 {
-    if (!this.parent)
+    if (!parent && !this.parent && !this.game)
     {
         return;
     }
 
+    var p = this.parent;
+
+    if (parent)
+    {
+        p = parent;
+    }
+    else if (!this.parent)
+    {
+        p = this.game.world;
+    }
+
     // create some matrix refs for easy access
-    var pt = this.parent.worldTransform;
+    var pt = p.worldTransform;
     var wt = this.worldTransform;
 
     // temporary matrix variables
@@ -585,7 +632,11 @@ PIXI.DisplayObject.prototype.updateTransform = function()
     }
 
     // multiply the alphas..
-    this.worldAlpha = this.alpha * this.parent.worldAlpha;
+    this.worldAlpha = this.alpha * p.worldAlpha;
+
+    this.worldPosition.set(wt.tx, wt.ty);
+    this.worldScale.set(Math.sqrt(wt.a * wt.a + wt.b * wt.b), Math.sqrt(wt.c * wt.c + wt.d * wt.d));
+    this.worldRotation = Math.atan2(-wt.c, wt.d);
 
     //  Custom callback?
     if (this.transformCallback)
@@ -902,7 +953,7 @@ Object.defineProperty(PIXI.DisplayObjectContainer.prototype, 'width', {
         
         var width = this.getLocalBounds().width;
 
-        if(width !== 0)
+        if (width !== 0)
         {
             this.scale.x = value / width;
         }
@@ -910,7 +961,6 @@ Object.defineProperty(PIXI.DisplayObjectContainer.prototype, 'width', {
         {
             this.scale.x = 1;
         }
-
         
         this._width = value;
     }
@@ -934,7 +984,7 @@ Object.defineProperty(PIXI.DisplayObjectContainer.prototype, 'height', {
 
         if (height !== 0)
         {
-            this.scale.y = value / height ;
+            this.scale.y = value / height;
         }
         else
         {
@@ -1141,15 +1191,19 @@ PIXI.DisplayObjectContainer.prototype.removeChildren = function(beginIndex, endI
  */
 PIXI.DisplayObjectContainer.prototype.updateTransform = function()
 {
-    if(!this.visible)return;
+    if (!this.visible)
+    {
+        return;
+    }
 
     this.displayObjectUpdateTransform();
 
-    //PIXI.DisplayObject.prototype.updateTransform.call( this );
+    if (this._cacheAsBitmap)
+    {
+        return;
+    }
 
-    if(this._cacheAsBitmap)return;
-
-    for(var i=0,j=this.children.length; i<j; i++)
+    for (var i = 0; i < this.children.length; i++)
     {
         this.children[i].updateTransform();
     }
@@ -1510,6 +1564,7 @@ PIXI.Sprite.prototype.setTexture = function(texture)
 {
     this.texture = texture;
     this.cachedTint = 0xFFFFFF;
+    this.texture.valid = true;
 };
 
 /**
@@ -1626,16 +1681,23 @@ PIXI.Sprite.prototype.getBounds = function(matrix)
 *
 * @method _renderWebGL
 * @param renderSession {RenderSession}
+* @param {Matrix} [matrix] - Optional matrix. If provided the Display Object will be rendered using this matrix, otherwise it will use its worldTransform.
 * @private
 */
-PIXI.Sprite.prototype._renderWebGL = function(renderSession)
+PIXI.Sprite.prototype._renderWebGL = function(renderSession, matrix)
 {
     // if the sprite is not visible or the alpha is 0 then no need to render this element
     if (!this.visible || this.alpha <= 0 || !this.renderable) return;
 
-    var i, j;
+    //  They provided an alternative rendering matrix, so use it
+    var wt = this.worldTransform;
 
-    // do a quick check to see if this element has a mask or a filter.
+    if (matrix)
+    {
+        wt = matrix;
+    }
+
+    //  A quick check to see if this element has a mask or a filter.
     if (this._mask || this._filters)
     {
         var spriteBatch =  renderSession.spriteBatch;
@@ -1658,7 +1720,7 @@ PIXI.Sprite.prototype._renderWebGL = function(renderSession)
         spriteBatch.render(this);
 
         // now loop through the children and make sure they get rendered
-        for (i = 0; i < this.children.length; i++)
+        for (var i = 0; i < this.children.length; i++)
         {
             this.children[i]._renderWebGL(renderSession);
         }
@@ -1673,12 +1735,12 @@ PIXI.Sprite.prototype._renderWebGL = function(renderSession)
     }
     else
     {
-        renderSession.spriteBatch.render(this);
+        renderSession.spriteBatch.render(this, wt);
 
-        // simple render children!
-        for (i = 0; i < this.children.length; i++)
+        //  Render children!
+        for (var i = 0; i < this.children.length; i++)
         {
-            this.children[i]._renderWebGL(renderSession);
+            this.children[i]._renderWebGL(renderSession, wt);
         }
 
     }
@@ -1689,12 +1751,21 @@ PIXI.Sprite.prototype._renderWebGL = function(renderSession)
 *
 * @method _renderCanvas
 * @param renderSession {RenderSession}
+* @param {Matrix} [matrix] - Optional matrix. If provided the Display Object will be rendered using this matrix, otherwise it will use its worldTransform.
 * @private
 */
-PIXI.Sprite.prototype._renderCanvas = function(renderSession)
+PIXI.Sprite.prototype._renderCanvas = function(renderSession, matrix)
 {
     // If the sprite is not visible or the alpha is 0 then no need to render this element
     if (this.visible === false || this.alpha === 0 || this.renderable === false || this.texture.crop.width <= 0 || this.texture.crop.height <= 0) return;
+
+    //  They provided an alternative rendering matrix, so use it
+    var wt = this.worldTransform;
+
+    if (matrix)
+    {
+        wt = matrix;
+    }
 
     if (this.blendMode !== renderSession.currentBlendMode)
     {
@@ -1728,25 +1799,13 @@ PIXI.Sprite.prototype._renderCanvas = function(renderSession)
         //  Allow for pixel rounding
         if (renderSession.roundPixels)
         {
-            renderSession.context.setTransform(
-                this.worldTransform.a,
-                this.worldTransform.b,
-                this.worldTransform.c,
-                this.worldTransform.d,
-                (this.worldTransform.tx * renderSession.resolution) | 0,
-                (this.worldTransform.ty * renderSession.resolution) | 0);
+            renderSession.context.setTransform(wt.a, wt.b, wt.c, wt.d, (wt.tx * renderSession.resolution) | 0, (wt.ty * renderSession.resolution) | 0);
             dx = dx | 0;
             dy = dy | 0;
         }
         else
         {
-            renderSession.context.setTransform(
-                this.worldTransform.a,
-                this.worldTransform.b,
-                this.worldTransform.c,
-                this.worldTransform.d,
-                this.worldTransform.tx * renderSession.resolution,
-                this.worldTransform.ty * renderSession.resolution);
+            renderSession.context.setTransform(wt.a, wt.b, wt.c, wt.d, wt.tx * renderSession.resolution, wt.ty * renderSession.resolution);
         }
 
         if (this.tint !== 0xFFFFFF)
@@ -1783,7 +1842,6 @@ PIXI.Sprite.prototype._renderCanvas = function(renderSession)
         }
     }
 
-    // OVERWRITE
     for (var i = 0; i < this.children.length; i++)
     {
         this.children[i]._renderCanvas(renderSession);
@@ -2066,7 +2124,6 @@ PIXI.Text = function(text, style)
 
     this.setText(text);
     this.setStyle(style);
-
 };
 
 // constructor
@@ -2122,43 +2179,6 @@ Object.defineProperty(PIXI.Text.prototype, 'height', {
 });
 
 /**
- * Set the style of the text
- *
- * @method setStyle
- * @param [style] {Object} The style parameters
- * @param [style.font='bold 20pt Arial'] {String} The style and size of the font
- * @param [style.fill='black'] {Object} A canvas fillstyle that will be used on the text eg 'red', '#00FF00'
- * @param [style.align='left'] {String} Alignment for multiline text ('left', 'center' or 'right'), does not affect single line text
- * @param [style.stroke='black'] {String} A canvas fillstyle that will be used on the text stroke eg 'blue', '#FCFF00'
- * @param [style.strokeThickness=0] {Number} A number that represents the thickness of the stroke. Default is 0 (no stroke)
- * @param [style.wordWrap=false] {Boolean} Indicates if word wrap should be used
- * @param [style.wordWrapWidth=100] {Number} The width at which text will wrap
- * @param [style.dropShadow=false] {Boolean} Set a drop shadow for the text
- * @param [style.dropShadowColor='#000000'] {String} A fill style to be used on the dropshadow e.g 'red', '#00FF00'
- * @param [style.dropShadowAngle=Math.PI/4] {Number} Set a angle of the drop shadow
- * @param [style.dropShadowDistance=5] {Number} Set a distance of the drop shadow
- */
-PIXI.Text.prototype.setStyle = function(style)
-{
-    style = style || {};
-    style.font = style.font || 'bold 20pt Arial';
-    style.fill = style.fill || 'black';
-    style.align = style.align || 'left';
-    style.stroke = style.stroke || 'black'; //provide a default, see: https://github.com/GoodBoyDigital/pixi.js/issues/136
-    style.strokeThickness = style.strokeThickness || 0;
-    style.wordWrap = style.wordWrap || false;
-    style.wordWrapWidth = style.wordWrapWidth || 100;
-    
-    style.dropShadow = style.dropShadow || false;
-    style.dropShadowAngle = style.dropShadowAngle || Math.PI / 6;
-    style.dropShadowDistance = style.dropShadowDistance || 4;
-    style.dropShadowColor = style.dropShadowColor || 'black';
-
-    this.style = style;
-    this.dirty = true;
-};
-
-/**
  * Set the copy for the text object. To split a line you can use '\n'.
  *
  * @method setText
@@ -2168,132 +2188,6 @@ PIXI.Text.prototype.setText = function(text)
 {
     this.text = text.toString() || ' ';
     this.dirty = true;
-};
-
-/**
- * Renders text and updates it when needed
- *
- * @method updateText
- * @private
- */
-PIXI.Text.prototype.updateText = function()
-{
-    this.texture.baseTexture.resolution = this.resolution;
-
-    this.context.font = this.style.font;
-
-    var outputText = this.text;
-
-    // word wrap
-    // preserve original text
-    if(this.style.wordWrap)outputText = this.wordWrap(this.text);
-
-    //split text into lines
-    var lines = outputText.split(/(?:\r\n|\r|\n)/);
-
-    //calculate text width
-    var lineWidths = [];
-    var maxLineWidth = 0;
-    var fontProperties = this.determineFontProperties(this.style.font);
-    for (var i = 0; i < lines.length; i++)
-    {
-        var lineWidth = this.context.measureText(lines[i]).width;
-        lineWidths[i] = lineWidth;
-        maxLineWidth = Math.max(maxLineWidth, lineWidth);
-    }
-
-    var width = maxLineWidth + this.style.strokeThickness;
-    if(this.style.dropShadow)width += this.style.dropShadowDistance;
-
-    this.canvas.width = ( width + this.context.lineWidth ) * this.resolution;
-    
-    //calculate text height
-    var lineHeight = fontProperties.fontSize + this.style.strokeThickness;
- 
-    var height = lineHeight * lines.length;
-    if(this.style.dropShadow)height += this.style.dropShadowDistance;
-
-    this.canvas.height = height * this.resolution;
-
-    this.context.scale( this.resolution, this.resolution);
-
-    if(navigator.isCocoonJS) this.context.clearRect(0,0,this.canvas.width,this.canvas.height);
-    
-    // used for debugging..
-    //this.context.fillStyle ="#FF0000"
-    //this.context.fillRect(0, 0, this.canvas.width,this.canvas.height);
-
-    this.context.font = this.style.font;
-    this.context.strokeStyle = this.style.stroke;
-    this.context.lineWidth = this.style.strokeThickness;
-    this.context.textBaseline = 'alphabetic';
-    //this.context.lineJoin = 'round';
-
-    var linePositionX;
-    var linePositionY;
-
-    if(this.style.dropShadow)
-    {
-        this.context.fillStyle = this.style.dropShadowColor;
-
-        var xShadowOffset = Math.sin(this.style.dropShadowAngle) * this.style.dropShadowDistance;
-        var yShadowOffset = Math.cos(this.style.dropShadowAngle) * this.style.dropShadowDistance;
-
-        for (i = 0; i < lines.length; i++)
-        {
-            linePositionX = this.style.strokeThickness / 2;
-            linePositionY = (this.style.strokeThickness / 2 + i * lineHeight) + fontProperties.ascent;
-
-            if(this.style.align === 'right')
-            {
-                linePositionX += maxLineWidth - lineWidths[i];
-            }
-            else if(this.style.align === 'center')
-            {
-                linePositionX += (maxLineWidth - lineWidths[i]) / 2;
-            }
-
-            if(this.style.fill)
-            {
-                this.context.fillText(lines[i], linePositionX + xShadowOffset, linePositionY + yShadowOffset);
-            }
-
-          //  if(dropShadow)
-        }
-    }
-
-    //set canvas text styles
-    this.context.fillStyle = this.style.fill;
-    
-    //draw lines line by line
-    for (i = 0; i < lines.length; i++)
-    {
-        linePositionX = this.style.strokeThickness / 2;
-        linePositionY = (this.style.strokeThickness / 2 + i * lineHeight) + fontProperties.ascent;
-
-        if(this.style.align === 'right')
-        {
-            linePositionX += maxLineWidth - lineWidths[i];
-        }
-        else if(this.style.align === 'center')
-        {
-            linePositionX += (maxLineWidth - lineWidths[i]) / 2;
-        }
-
-        if(this.style.stroke && this.style.strokeThickness)
-        {
-            this.context.strokeText(lines[i], linePositionX, linePositionY);
-        }
-
-        if(this.style.fill)
-        {
-            this.context.fillText(lines[i], linePositionX, linePositionY);
-        }
-
-      //  if(dropShadow)
-    }
-
-    this.updateTexture();
 };
 
 /**
@@ -2367,7 +2261,7 @@ PIXI.Text.prototype.determineFontProperties = function(fontStyle)
 {
     var properties = PIXI.Text.fontPropertiesCache[fontStyle];
 
-    if(!properties)
+    if (!properties)
     {
         properties = {};
         
@@ -2394,6 +2288,17 @@ PIXI.Text.prototype.determineFontProperties = function(fontStyle)
         context.fillStyle = '#000';
         context.fillText('|MÉq', 0, baseline);
 
+        if (!context.getImageData(0, 0, width, height))
+        {
+            properties.ascent = baseline;
+            properties.descent = baseline + 6;
+            properties.fontSize = properties.ascent + properties.descent;
+
+            PIXI.Text.fontPropertiesCache[fontStyle] = properties;
+
+            return properties;
+        }
+
         var imagedata = context.getImageData(0, 0, width, height).data;
         var pixels = imagedata.length;
         var line = width * 4;
@@ -2404,17 +2309,18 @@ PIXI.Text.prototype.determineFontProperties = function(fontStyle)
         var stop = false;
 
         // ascent. scan from top to bottom until we find a non red pixel
-        for(i = 0; i < baseline; i++)
+        for (i = 0; i < baseline; i++)
         {
-            for(j = 0; j < line; j += 4)
+            for (j = 0; j < line; j += 4)
             {
-                if(imagedata[idx + j] !== 255)
+                if (imagedata[idx + j] !== 255)
                 {
                     stop = true;
                     break;
                 }
             }
-            if(!stop)
+
+            if (!stop)
             {
                 idx += line;
             }
@@ -2430,17 +2336,18 @@ PIXI.Text.prototype.determineFontProperties = function(fontStyle)
         stop = false;
 
         // descent. scan from bottom to top until we find a non red pixel
-        for(i = height; i > baseline; i--)
+        for (i = height; i > baseline; i--)
         {
-            for(j = 0; j < line; j += 4)
+            for (j = 0; j < line; j += 4)
             {
-                if(imagedata[idx + j] !== 255)
+                if (imagedata[idx + j] !== 255)
                 {
                     stop = true;
                     break;
                 }
             }
-            if(!stop)
+
+            if (!stop)
             {
                 idx -= line;
             }
@@ -2462,54 +2369,6 @@ PIXI.Text.prototype.determineFontProperties = function(fontStyle)
 };
 
 /**
- * Applies newlines to a string to have it optimally fit into the horizontal
- * bounds set by the Text object's wordWrapWidth property.
- *
- * @method wordWrap
- * @param text {String}
- * @private
- */
-PIXI.Text.prototype.wordWrap = function(text)
-{
-    // Greedy wrapping algorithm that will wrap words as the line grows longer
-    // than its horizontal bounds.
-    var result = '';
-    var lines = text.split('\n');
-    for (var i = 0; i < lines.length; i++)
-    {
-        var spaceLeft = this.style.wordWrapWidth;
-        var words = lines[i].split(' ');
-        for (var j = 0; j < words.length; j++)
-        {
-            var wordWidth = this.context.measureText(words[j]).width;
-            var wordWidthWithSpace = wordWidth + this.context.measureText(' ').width;
-            if(j === 0 || wordWidthWithSpace > spaceLeft)
-            {
-                // Skip printing the newline if it's the first word of the line that is
-                // greater than the word wrap width.
-                if(j > 0)
-                {
-                    result += '\n';
-                }
-                result += words[j];
-                spaceLeft = this.style.wordWrapWidth - wordWidth;
-            }
-            else
-            {
-                spaceLeft -= wordWidthWithSpace;
-                result += ' ' + words[j];
-            }
-        }
-
-        if (i < lines.length-1)
-        {
-            result += '\n';
-        }
-    }
-    return result;
-};
-
-/**
 * Returns the bounds of the Text as a rectangle. The bounds calculation takes the worldTransform into account.
 *
 * @method getBounds
@@ -2525,21 +2384,6 @@ PIXI.Text.prototype.getBounds = function(matrix)
     }
 
     return PIXI.Sprite.prototype.getBounds.call(this, matrix);
-};
-
-/**
- * Destroys this text object.
- *
- * @method destroy
- * @param destroyBaseTexture {Boolean} whether to destroy the base texture as well
- */
-PIXI.Text.prototype.destroy = function(destroyBaseTexture)
-{
-    // make sure to reset the the context and canvas.. dont want this hanging around in memory!
-    this.context = null;
-    this.canvas = null;
-
-    this.texture.destroy(destroyBaseTexture === undefined ? true : destroyBaseTexture);
 };
 
 PIXI.Text.fontPropertiesCache = {};
@@ -2934,6 +2778,11 @@ PIXI.canUseNewCanvasBlendModes = function()
     context.globalCompositeOperation = 'multiply';
     context.drawImage(magenta, 0, 0);
     context.drawImage(yellow, 2, 0);
+
+    if (!context.getImageData(2,0,1,1))
+    {
+        return false;
+    }
 
     var data = context.getImageData(2,0,1,1).data;
 
@@ -3568,7 +3417,7 @@ PIXI.PixiShader.prototype.syncUniforms = function()
                     gl.bindTexture(gl.TEXTURE_2D, uniform.value.baseTexture._glTextures[gl.id]);
                 }
 
-             //   gl.bindTexture(gl.TEXTURE_2D, uniform.value.baseTexture._glTextures[gl.id] || PIXI.createWebGLTexture( uniform.value.baseTexture, gl));
+                //  gl.bindTexture(gl.TEXTURE_2D, uniform.value.baseTexture._glTextures[gl.id] || PIXI.createWebGLTexture( uniform.value.baseTexture, gl));
                 gl.uniform1i(uniform.uniformLocation, this.textureCount);
                 this.textureCount++;
             }
@@ -5367,7 +5216,7 @@ PIXI.WebGLRenderer.prototype.render = function(stage)
  * @param projection {Point} The projection
  * @param buffer {Array} a standard WebGL buffer
  */
-PIXI.WebGLRenderer.prototype.renderDisplayObject = function(displayObject, projection, buffer)
+PIXI.WebGLRenderer.prototype.renderDisplayObject = function(displayObject, projection, buffer, matrix)
 {
     this.renderSession.blendModeManager.setBlendMode(PIXI.blendModes.NORMAL);
 
@@ -5390,7 +5239,7 @@ PIXI.WebGLRenderer.prototype.renderDisplayObject = function(displayObject, proje
     this.filterManager.begin(this.renderSession, buffer);
 
     // render the scene!
-    displayObject._renderWebGL(this.renderSession);
+    displayObject._renderWebGL(this.renderSession, matrix);
 
     // finish the sprite batch
     this.spriteBatch.end();
@@ -6361,14 +6210,22 @@ PIXI.WebGLSpriteBatch.prototype.end = function()
 /**
 * @method render
 * @param sprite {Sprite} the sprite to render when using this spritebatch
+* @param {Matrix} [matrix] - Optional matrix. If provided the Display Object will be rendered using this matrix, otherwise it will use its worldTransform.
 */
-PIXI.WebGLSpriteBatch.prototype.render = function(sprite)
+PIXI.WebGLSpriteBatch.prototype.render = function(sprite, matrix)
 {
     var texture = sprite.texture;
 
-   //TODO set blend modes.. 
+    //  They provided an alternative rendering matrix, so use it
+    var wt = sprite.worldTransform;
+
+    if (matrix)
+    {
+        wt = matrix;
+    }
+
     // check texture..
-    if(this.currentBatchSize >= this.size)
+    if (this.currentBatchSize >= this.size)
     {
         this.flush();
         this.currentBaseTexture = texture.baseTexture;
@@ -6376,10 +6233,13 @@ PIXI.WebGLSpriteBatch.prototype.render = function(sprite)
 
     // get the uvs for the texture
     var uvs = texture._uvs;
-    // if the uvs have not updated then no point rendering just yet!
-    if(!uvs)return;
 
-    // TODO trim??
+    // if the uvs have not updated then no point rendering just yet!
+    if (!uvs)
+    {
+        return;
+    }
+
     var aX = sprite.anchor.x;
     var aY = sprite.anchor.y;
 
@@ -6387,7 +6247,7 @@ PIXI.WebGLSpriteBatch.prototype.render = function(sprite)
         
     if (texture.trim)
     {
-        // if the sprite is trimmed then we need to add the extra space before transforming the sprite coords..
+        // if the sprite is trimmed then we need to add the extra space before transforming the sprite coords.
         var trim = texture.trim;
 
         w1 = trim.x - aX * trim.width;
@@ -6395,93 +6255,89 @@ PIXI.WebGLSpriteBatch.prototype.render = function(sprite)
 
         h1 = trim.y - aY * trim.height;
         h0 = h1 + texture.crop.height;
-
     }
     else
     {
-        w0 = (texture.frame.width ) * (1-aX);
-        w1 = (texture.frame.width ) * -aX;
+        w0 = (texture.frame.width) * (1-aX);
+        w1 = (texture.frame.width) * -aX;
 
         h0 = texture.frame.height * (1-aY);
         h1 = texture.frame.height * -aY;
     }
 
-    var index = this.currentBatchSize * 4 * this.vertSize;
-    
+    var i = this.currentBatchSize * 4 * this.vertSize;
     var resolution = texture.baseTexture.resolution;
 
-    var worldTransform = sprite.worldTransform;
-
-    var a = worldTransform.a / resolution;
-    var b = worldTransform.b / resolution;
-    var c = worldTransform.c / resolution;
-    var d = worldTransform.d / resolution;
-    var tx = worldTransform.tx;
-    var ty = worldTransform.ty;
+    var a = wt.a / resolution;
+    var b = wt.b / resolution;
+    var c = wt.c / resolution;
+    var d = wt.d / resolution;
+    var tx = wt.tx;
+    var ty = wt.ty;
 
     var colors = this.colors;
     var positions = this.positions;
 
-    if(this.renderSession.roundPixels)
+    if (this.renderSession.roundPixels)
     {
         // xy
-        positions[index] = a * w1 + c * h1 + tx | 0;
-        positions[index+1] = d * h1 + b * w1 + ty | 0;
+        positions[i] = a * w1 + c * h1 + tx | 0;
+        positions[i+1] = d * h1 + b * w1 + ty | 0;
 
         // xy
-        positions[index+5] = a * w0 + c * h1 + tx | 0;
-        positions[index+6] = d * h1 + b * w0 + ty | 0;
+        positions[i+5] = a * w0 + c * h1 + tx | 0;
+        positions[i+6] = d * h1 + b * w0 + ty | 0;
 
          // xy
-        positions[index+10] = a * w0 + c * h0 + tx | 0;
-        positions[index+11] = d * h0 + b * w0 + ty | 0;
+        positions[i+10] = a * w0 + c * h0 + tx | 0;
+        positions[i+11] = d * h0 + b * w0 + ty | 0;
 
         // xy
-        positions[index+15] = a * w1 + c * h0 + tx | 0;
-        positions[index+16] = d * h0 + b * w1 + ty | 0;
+        positions[i+15] = a * w1 + c * h0 + tx | 0;
+        positions[i+16] = d * h0 + b * w1 + ty | 0;
     }
     else
     {
         // xy
-        positions[index] = a * w1 + c * h1 + tx;
-        positions[index+1] = d * h1 + b * w1 + ty;
+        positions[i] = a * w1 + c * h1 + tx;
+        positions[i+1] = d * h1 + b * w1 + ty;
 
         // xy
-        positions[index+5] = a * w0 + c * h1 + tx;
-        positions[index+6] = d * h1 + b * w0 + ty;
+        positions[i+5] = a * w0 + c * h1 + tx;
+        positions[i+6] = d * h1 + b * w0 + ty;
 
          // xy
-        positions[index+10] = a * w0 + c * h0 + tx;
-        positions[index+11] = d * h0 + b * w0 + ty;
+        positions[i+10] = a * w0 + c * h0 + tx;
+        positions[i+11] = d * h0 + b * w0 + ty;
 
         // xy
-        positions[index+15] = a * w1 + c * h0 + tx;
-        positions[index+16] = d * h0 + b * w1 + ty;
+        positions[i+15] = a * w1 + c * h0 + tx;
+        positions[i+16] = d * h0 + b * w1 + ty;
     }
     
     // uv
-    positions[index+2] = uvs.x0;
-    positions[index+3] = uvs.y0;
+    positions[i+2] = uvs.x0;
+    positions[i+3] = uvs.y0;
 
     // uv
-    positions[index+7] = uvs.x1;
-    positions[index+8] = uvs.y1;
+    positions[i+7] = uvs.x1;
+    positions[i+8] = uvs.y1;
 
      // uv
-    positions[index+12] = uvs.x2;
-    positions[index+13] = uvs.y2;
+    positions[i+12] = uvs.x2;
+    positions[i+13] = uvs.y2;
 
     // uv
-    positions[index+17] = uvs.x3;
-    positions[index+18] = uvs.y3;
+    positions[i+17] = uvs.x3;
+    positions[i+18] = uvs.y3;
 
     // color and alpha
     var tint = sprite.tint;
-    colors[index+4] = colors[index+9] = colors[index+14] = colors[index+19] = (tint >> 16) + (tint & 0xff00) + ((tint & 0xff) << 16) + (sprite.worldAlpha * 255 << 24);
+
+    colors[i+4] = colors[i+9] = colors[i+14] = colors[i+19] = (tint >> 16) + (tint & 0xff00) + ((tint & 0xff) << 16) + (sprite.worldAlpha * 255 << 24);
 
     // increment the batchsize
     this.sprites[this.currentBatchSize++] = sprite;
-
 
 };
 
@@ -6489,35 +6345,44 @@ PIXI.WebGLSpriteBatch.prototype.render = function(sprite)
 * Renders a TilingSprite using the spriteBatch.
 * 
 * @method renderTilingSprite
-* @param sprite {TilingSprite} the tilingSprite to render
+* @param sprite {TilingSprite} the sprite to render
 */
-PIXI.WebGLSpriteBatch.prototype.renderTilingSprite = function(tilingSprite)
+PIXI.WebGLSpriteBatch.prototype.renderTilingSprite = function(sprite)
 {
-    var texture = tilingSprite.tilingTexture;
+    var texture = sprite.tilingTexture;
 
     // check texture..
-    if(this.currentBatchSize >= this.size)
+    if (this.currentBatchSize >= this.size)
     {
-        //return;
         this.flush();
         this.currentBaseTexture = texture.baseTexture;
     }
 
-     // set the textures uvs temporarily
-    // TODO create a separate texture so that we can tile part of a texture
+    // set the textures uvs temporarily
+    if (!sprite._uvs)
+    {
+        sprite._uvs = new PIXI.TextureUvs();
+    }
 
-    if(!tilingSprite._uvs)tilingSprite._uvs = new PIXI.TextureUvs();
+    var uvs = sprite._uvs;
 
-    var uvs = tilingSprite._uvs;
+    var w = texture.baseTexture.width;
+    var h = texture.baseTexture.height;
 
-    tilingSprite.tilePosition.x %= texture.baseTexture.width * tilingSprite.tileScaleOffset.x;
-    tilingSprite.tilePosition.y %= texture.baseTexture.height * tilingSprite.tileScaleOffset.y;
+    // var w = sprite._frame.sourceSizeW;
+    // var h = sprite._frame.sourceSizeH;
 
-    var offsetX =  tilingSprite.tilePosition.x/(texture.baseTexture.width*tilingSprite.tileScaleOffset.x);
-    var offsetY =  tilingSprite.tilePosition.y/(texture.baseTexture.height*tilingSprite.tileScaleOffset.y);
+    // w = 16;
+    // h = 16;
 
-    var scaleX =  (tilingSprite.width / texture.baseTexture.width)  / (tilingSprite.tileScale.x * tilingSprite.tileScaleOffset.x);
-    var scaleY =  (tilingSprite.height / texture.baseTexture.height) / (tilingSprite.tileScale.y * tilingSprite.tileScaleOffset.y);
+    sprite.tilePosition.x %= w * sprite.tileScaleOffset.x;
+    sprite.tilePosition.y %= h * sprite.tileScaleOffset.y;
+
+    var offsetX = sprite.tilePosition.x / (w * sprite.tileScaleOffset.x);
+    var offsetY = sprite.tilePosition.y / (h * sprite.tileScaleOffset.y);
+
+    var scaleX = (sprite.width / w) / (sprite.tileScale.x * sprite.tileScaleOffset.x);
+    var scaleY = (sprite.height / h) / (sprite.tileScale.y * sprite.tileScaleOffset.y);
 
     uvs.x0 = 0 - offsetX;
     uvs.y0 = 0 - offsetY;
@@ -6531,76 +6396,76 @@ PIXI.WebGLSpriteBatch.prototype.renderTilingSprite = function(tilingSprite)
     uvs.x3 = 0 - offsetX;
     uvs.y3 = (1 * scaleY) - offsetY;
 
-    // get the tilingSprites current alpha and tint and combining them into a single color
-    var tint = tilingSprite.tint;
-    var color = (tint >> 16) + (tint & 0xff00) + ((tint & 0xff) << 16) + (tilingSprite.alpha * 255 << 24);
+    //  Get the sprites current alpha and tint and combine them into a single color
+    var tint = sprite.tint;
+    var color = (tint >> 16) + (tint & 0xff00) + ((tint & 0xff) << 16) + (sprite.alpha * 255 << 24);
 
     var positions = this.positions;
     var colors = this.colors;
 
-    var width = tilingSprite.width;
-    var height = tilingSprite.height;
+    var width = sprite.width;
+    var height = sprite.height;
 
     // TODO trim??
-    var aX = tilingSprite.anchor.x;
-    var aY = tilingSprite.anchor.y;
+    var aX = sprite.anchor.x;
+    var aY = sprite.anchor.y;
     var w0 = width * (1-aX);
     var w1 = width * -aX;
 
     var h0 = height * (1-aY);
     var h1 = height * -aY;
 
-    var index = this.currentBatchSize * 4 * this.vertSize;
+    var i = this.currentBatchSize * 4 * this.vertSize;
 
     var resolution = texture.baseTexture.resolution;
 
-    var worldTransform = tilingSprite.worldTransform;
+    var wt = sprite.worldTransform;
 
-    var a = worldTransform.a / resolution;//[0];
-    var b = worldTransform.b / resolution;//[3];
-    var c = worldTransform.c / resolution;//[1];
-    var d = worldTransform.d / resolution;//[4];
-    var tx = worldTransform.tx;//[2];
-    var ty = worldTransform.ty;//[5];
-
-    // xy
-    positions[index++] = a * w1 + c * h1 + tx;
-    positions[index++] = d * h1 + b * w1 + ty;
-    // uv
-    positions[index++] = uvs.x0;
-    positions[index++] = uvs.y0;
-    // color
-    colors[index++] = color;
+    var a = wt.a / resolution;
+    var b = wt.b / resolution;
+    var c = wt.c / resolution;
+    var d = wt.d / resolution;
+    var tx = wt.tx;
+    var ty = wt.ty;
 
     // xy
-    positions[index++] = (a * w0 + c * h1 + tx);
-    positions[index++] = d * h1 + b * w0 + ty;
+    positions[i++] = a * w1 + c * h1 + tx;
+    positions[i++] = d * h1 + b * w1 + ty;
     // uv
-    positions[index++] = uvs.x1;
-    positions[index++] = uvs.y1;
+    positions[i++] = uvs.x0;
+    positions[i++] = uvs.y0;
     // color
-    colors[index++] = color;
+    colors[i++] = color;
+
+    // xy
+    positions[i++] = (a * w0 + c * h1 + tx);
+    positions[i++] = d * h1 + b * w0 + ty;
+    // uv
+    positions[i++] = uvs.x1;
+    positions[i++] = uvs.y1;
+    // color
+    colors[i++] = color;
     
     // xy
-    positions[index++] = a * w0 + c * h0 + tx;
-    positions[index++] = d * h0 + b * w0 + ty;
+    positions[i++] = a * w0 + c * h0 + tx;
+    positions[i++] = d * h0 + b * w0 + ty;
     // uv
-    positions[index++] = uvs.x2;
-    positions[index++] = uvs.y2;
+    positions[i++] = uvs.x2;
+    positions[i++] = uvs.y2;
     // color
-    colors[index++] = color;
+    colors[i++] = color;
 
     // xy
-    positions[index++] = a * w1 + c * h0 + tx;
-    positions[index++] = d * h0 + b * w1 + ty;
+    positions[i++] = a * w1 + c * h0 + tx;
+    positions[i++] = d * h0 + b * w1 + ty;
     // uv
-    positions[index++] = uvs.x3;
-    positions[index++] = uvs.y3;
+    positions[i++] = uvs.x3;
+    positions[i++] = uvs.y3;
     // color
-    colors[index++] = color;
+    colors[i++] = color;
 
     // increment the batchsize
-    this.sprites[this.currentBatchSize++] = tilingSprite;
+    this.sprites[this.currentBatchSize++] = sprite;
 };
 
 /**
@@ -6611,14 +6476,18 @@ PIXI.WebGLSpriteBatch.prototype.renderTilingSprite = function(tilingSprite)
 PIXI.WebGLSpriteBatch.prototype.flush = function()
 {
     // If the batch is length 0 then return as there is nothing to draw
-    if (this.currentBatchSize===0)return;
+    if (this.currentBatchSize === 0)
+    {
+        return;
+    }
 
     var gl = this.gl;
     var shader;
 
-    if(this.dirty)
+    if (this.dirty)
     {
         this.dirty = false;
+
         // bind the main texture
         gl.activeTexture(gl.TEXTURE0);
 
@@ -6626,10 +6495,10 @@ PIXI.WebGLSpriteBatch.prototype.flush = function()
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
 
-        shader =  this.defaultShader.shaders[gl.id];
+        shader = this.defaultShader.shaders[gl.id];
 
         // this is the same for each shader?
-        var stride =  this.vertSize * 4;
+        var stride = this.vertSize * 4;
         gl.vertexAttribPointer(shader.aVertexPosition, 2, gl.FLOAT, false, stride, 0);
         gl.vertexAttribPointer(shader.aTextureCoord, 2, gl.FLOAT, false, stride, 2 * 4);
 
@@ -6638,7 +6507,7 @@ PIXI.WebGLSpriteBatch.prototype.flush = function()
     }
 
     // upload the verts to the buffer  
-    if(this.currentBatchSize > ( this.size * 0.5 ) )
+    if (this.currentBatchSize > (this.size * 0.5))
     {
         gl.bufferSubData(gl.ARRAY_BUFFER, 0, this.vertices);
     }
@@ -6664,14 +6533,22 @@ PIXI.WebGLSpriteBatch.prototype.flush = function()
         
         sprite = this.sprites[i];
 
-        nextTexture = sprite.texture.baseTexture;
+        if (sprite.tilingTexture)
+        {
+            nextTexture = sprite.tilingTexture.baseTexture;
+        }
+        else
+        {
+            nextTexture = sprite.texture.baseTexture;
+        }
+
         nextBlendMode = sprite.blendMode;
         nextShader = sprite.shader || this.defaultShader;
 
         blendSwap = currentBlendMode !== nextBlendMode;
         shaderSwap = currentShader !== nextShader; // should I use _UIDS???
 
-        if(currentBaseTexture !== nextTexture || blendSwap || shaderSwap)
+        if (currentBaseTexture !== nextTexture || blendSwap || shaderSwap)
         {
             this.renderBatch(currentBaseTexture, batchSize, start);
 
@@ -6679,24 +6556,24 @@ PIXI.WebGLSpriteBatch.prototype.flush = function()
             batchSize = 0;
             currentBaseTexture = nextTexture;
 
-            if( blendSwap )
+            if (blendSwap)
             {
                 currentBlendMode = nextBlendMode;
-                this.renderSession.blendModeManager.setBlendMode( currentBlendMode );
+                this.renderSession.blendModeManager.setBlendMode(currentBlendMode);
             }
 
-            if( shaderSwap )
+            if (shaderSwap)
             {
                 currentShader = nextShader;
                 
                 shader = currentShader.shaders[gl.id];
 
-                if(!shader)
+                if (!shader)
                 {
                     shader = new PIXI.PixiShader(gl);
 
-                    shader.fragmentSrc =currentShader.fragmentSrc;
-                    shader.uniforms =currentShader.uniforms;
+                    shader.fragmentSrc = currentShader.fragmentSrc;
+                    shader.uniforms = currentShader.uniforms;
                     shader.init();
 
                     currentShader.shaders[gl.id] = shader;
@@ -6705,14 +6582,17 @@ PIXI.WebGLSpriteBatch.prototype.flush = function()
                 // set shader function???
                 this.renderSession.shaderManager.setShader(shader);
 
-                if(shader.dirty)shader.syncUniforms();
+                if (shader.dirty)
+                {
+                    shader.syncUniforms();
+                }
                 
-                // both thease only need to be set if they are changing..
+                // both these only need to be set if they are changing..
                 // set the projection
                 var projection = this.renderSession.projection;
                 gl.uniform2f(shader.projectionVector, projection.x, projection.y);
 
-                // TODO - this is temprorary!
+                // TODO - this is temporary!
                 var offsetVector = this.renderSession.offset;
                 gl.uniform2f(shader.offsetVector, offsetVector.x, offsetVector.y);
 
@@ -6737,12 +6617,15 @@ PIXI.WebGLSpriteBatch.prototype.flush = function()
 */
 PIXI.WebGLSpriteBatch.prototype.renderBatch = function(texture, size, startIndex)
 {
-    if(size === 0)return;
+    if (size === 0)
+    {
+        return;
+    }
 
     var gl = this.gl;
 
     // check if a texture is dirty..
-    if(texture._dirty[gl.id])
+    if (texture._dirty[gl.id])
     {
         this.renderSession.renderer.updateTexture(texture);
     }
@@ -6786,8 +6669,8 @@ PIXI.WebGLSpriteBatch.prototype.destroy = function()
     this.vertices = null;
     this.indices = null;
     
-    this.gl.deleteBuffer( this.vertexBuffer );
-    this.gl.deleteBuffer( this.indexBuffer );
+    this.gl.deleteBuffer(this.vertexBuffer);
+    this.gl.deleteBuffer(this.indexBuffer);
     
     this.currentBaseTexture = null;
     
@@ -7930,9 +7813,7 @@ PIXI.CanvasMaskManager.prototype.popMask = function(renderSession)
  * @class CanvasTinter
  * @static
  */
-PIXI.CanvasTinter = function()
-{
-};
+PIXI.CanvasTinter = function() {};
 
 /**
  * Basically this method just needs a sprite and a color and tints the sprite with the given color.
@@ -7947,36 +7828,18 @@ PIXI.CanvasTinter.getTintedTexture = function(sprite, color)
 {
     var texture = sprite.texture;
 
-    //  Disabling the tintCache for a number of reasons:
-    //  
-    //  1) It ate memory like it was going out of fashion if the texture was big
-    //  2) It doesn't work with animated sprites, only the first frame is ever tinted
-    //  3) The tinted texture is stored in Sprite.tintedTexture anyway, so isn't completed un-cached
-    //  4) The cache stopped you being to able to do subtle tint shifts as the color value was rounded
-
-    // color = PIXI.CanvasTinter.roundColor(color);
-    // var stringColor = "#" + ("00000" + ( color | 0).toString(16)).substr(-6);
-    // texture.tintCache = texture.tintCache || {};
-    // if(texture.tintCache[stringColor]) return texture.tintCache[stringColor];
-
-    // clone texture..
     var canvas = PIXI.CanvasTinter.canvas || document.createElement("canvas");
     
     PIXI.CanvasTinter.tintMethod(texture, color, canvas);
 
     if (PIXI.CanvasTinter.convertTintToImage)
     {
-        // is this better?
         var tintImage = new Image();
         tintImage.src = canvas.toDataURL();
-
-        // texture.tintCache[stringColor] = tintImage;
     }
     else
     {
-        // texture.tintCache = canvas;
-        // texture.tintCache[stringColor] = canvas;
-        // if we are not converting the texture to an image then we need to lose the reference to the canvas
+        //  If we are not converting the texture to an image then we need to lose the reference to the canvas
         PIXI.CanvasTinter.canvas = null;
     }
 
@@ -7994,7 +7857,7 @@ PIXI.CanvasTinter.getTintedTexture = function(sprite, color)
  */
 PIXI.CanvasTinter.tintWithMultiply = function(texture, color, canvas)
 {
-    var context = canvas.getContext( "2d" );
+    var context = canvas.getContext("2d");
 
     var crop = texture.crop;
 
@@ -8002,68 +7865,11 @@ PIXI.CanvasTinter.tintWithMultiply = function(texture, color, canvas)
     canvas.height = crop.height;
 
     context.fillStyle = "#" + ("00000" + ( color | 0).toString(16)).substr(-6);
-    
     context.fillRect(0, 0, crop.width, crop.height);
-    
+
     context.globalCompositeOperation = "multiply";
 
-    context.drawImage(texture.baseTexture.source,
-                           crop.x,
-                           crop.y,
-                           crop.width,
-                           crop.height,
-                           0,
-                           0,
-                           crop.width,
-                           crop.height);
-
-    context.globalCompositeOperation = "destination-atop";
-
-    context.drawImage(texture.baseTexture.source,
-                           crop.x,
-                           crop.y,
-                           crop.width,
-                           crop.height,
-                           0,
-                           0,
-                           crop.width,
-                           crop.height);
-};
-
-/**
- * Tint a texture using the "overlay" operation.
- * 
- * @method tintWithOverlay
- * @static
- * @param texture {Texture} the texture to tint
- * @param color {Number} the color to use to tint the sprite with
- * @param canvas {HTMLCanvasElement} the current canvas
- */
-PIXI.CanvasTinter.tintWithOverlay = function(texture, color, canvas)
-{
-    var context = canvas.getContext( "2d" );
-
-    var crop = texture.crop;
-
-    canvas.width = crop.width;
-    canvas.height = crop.height;
-    
-    context.globalCompositeOperation = "copy";
-    context.fillStyle = "#" + ("00000" + ( color | 0).toString(16)).substr(-6);
-    context.fillRect(0, 0, crop.width, crop.height);
-
-    context.globalCompositeOperation = "destination-atop";
-    context.drawImage(texture.baseTexture.source,
-                           crop.x,
-                           crop.y,
-                           crop.width,
-                           crop.height,
-                           0,
-                           0,
-                           crop.width,
-                           crop.height);
-    
-    //context.globalCompositeOperation = "copy";
+    context.drawImage(texture.baseTexture.source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
 };
 
 /**
@@ -8085,15 +7891,8 @@ PIXI.CanvasTinter.tintWithPerPixel = function(texture, color, canvas)
     canvas.height = crop.height;
   
     context.globalCompositeOperation = "copy";
-    context.drawImage(texture.baseTexture.source,
-                           crop.x,
-                           crop.y,
-                           crop.width,
-                           crop.height,
-                           0,
-                           0,
-                           crop.width,
-                           crop.height);
+
+    context.drawImage(texture.baseTexture.source, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
 
     var rgbValues = PIXI.hex2rgb(color);
     var r = rgbValues[0], g = rgbValues[1], b = rgbValues[2];
@@ -8104,18 +7903,18 @@ PIXI.CanvasTinter.tintWithPerPixel = function(texture, color, canvas)
 
     for (var i = 0; i < pixels.length; i += 4)
     {
-      pixels[i+0] *= r;
-      pixels[i+1] *= g;
-      pixels[i+2] *= b;
+        pixels[i + 0] *= r;
+        pixels[i + 1] *= g;
+        pixels[i + 2] *= b;
 
-      if (!PIXI.CanvasTinter.canHandleAlpha)
-      {
-        var alpha = pixels[i+3];
+        if (!PIXI.CanvasTinter.canHandleAlpha)
+        {
+            var alpha = pixels[i + 3];
 
-        pixels[i+0] /= 255 / alpha;
-        pixels[i+1] /= 255 / alpha;
-        pixels[i+2] /= 255 / alpha;
-      }
+            pixels[i + 0] /= 255 / alpha;
+            pixels[i + 1] /= 255 / alpha;
+            pixels[i + 2] /= 255 / alpha;
+        }
     }
 
     context.putImageData(pixelData, 0, 0);
@@ -8158,6 +7957,11 @@ PIXI.CanvasTinter.checkInverseAlpha = function()
 
     //  Get the color values
     var s1 = canvas.context.getImageData(0, 0, 1, 1);
+
+    if (s1 === null)
+    {
+        return false;
+    }
 
     //  Plot them to x2
     canvas.context.putImageData(s1, 1, 0);
@@ -8485,13 +8289,14 @@ PIXI.CanvasRenderer.prototype.resize = function(width, height)
  * @method renderDisplayObject
  * @param displayObject {DisplayObject} The displayObject to render
  * @param context {CanvasRenderingContext2D} the context 2d method of the canvas
+ * @param [matrix] {Matrix} Optional matrix to apply to the display object before rendering.
  * @private
  */
-PIXI.CanvasRenderer.prototype.renderDisplayObject = function(displayObject, context)
+PIXI.CanvasRenderer.prototype.renderDisplayObject = function(displayObject, context, matrix)
 {
     this.renderSession.context = context || this.context;
     this.renderSession.resolution = this.resolution;
-    displayObject._renderCanvas(this.renderSession);
+    displayObject._renderCanvas(this.renderSession, matrix);
 };
 
 /**
@@ -9488,11 +9293,16 @@ PIXI.Graphics.prototype.drawEllipse = function(x, y, width, height)
  * Draws a polygon using the given path.
  *
  * @method drawPolygon
- * @param path {Array} The path data used to construct the polygon. If you've got a Phaser.Polygon object then pass `polygon.points` here.
+ * @param path {Array|Phaser.Polygon} The path data used to construct the polygon. Can either be an array of points or a Phaser.Polygon object.
  * @return {Graphics}
  */
 PIXI.Graphics.prototype.drawPolygon = function(path)
 {
+    if (path instanceof Phaser.Polygon || path instanceof PIXI.Polygon)
+    {
+        path = path.points;
+    }
+
     // prevents an argument assignment deopt
     // see section 3.1: https://github.com/petkaantonov/bluebird/wiki/Optimization-killers#3-managing-arguments
     var points = path;
@@ -9649,10 +9459,8 @@ PIXI.Graphics.prototype._renderWebGL = function(renderSession)
 */
 PIXI.Graphics.prototype._renderCanvas = function(renderSession)
 {
-    if (this.isMask === true)
-    {
-        return;
-    }
+    // if the sprite is not visible or the alpha is 0 then no need to render this element
+    if (this.visible === false || this.alpha === 0 || this.isMask === true) return;
 
     // if the tint has changed, set the graphics object to dirty.
     if (this._prevTint !== this.tint) {
@@ -10881,7 +10689,7 @@ PIXI.TilingSprite = function(texture, width, height)
      * @property width
      * @type Number
      */
-    this._width = width || 100;
+    this._width = width || 128;
 
     /**
      * The height of the tiling sprite
@@ -10889,7 +10697,7 @@ PIXI.TilingSprite = function(texture, width, height)
      * @property height
      * @type Number
      */
-    this._height = height || 100;
+    this._height = height || 128;
 
     /**
      * The scaling of the image that is being tiled
@@ -10897,7 +10705,7 @@ PIXI.TilingSprite = function(texture, width, height)
      * @property tileScale
      * @type Point
      */
-    this.tileScale = new PIXI.Point(1,1);
+    this.tileScale = new PIXI.Point(1, 1);
 
     /**
      * A point that represents the scale of the texture object
@@ -10905,7 +10713,7 @@ PIXI.TilingSprite = function(texture, width, height)
      * @property tileScaleOffset
      * @type Point
      */
-    this.tileScaleOffset = new PIXI.Point(1,1);
+    this.tileScaleOffset = new PIXI.Point(1, 1);
     
     /**
      * The offset position of the image that is being tiled
@@ -10913,7 +10721,7 @@ PIXI.TilingSprite = function(texture, width, height)
      * @property tilePosition
      * @type Point
      */
-    this.tilePosition = new PIXI.Point(0,0);
+    this.tilePosition = new PIXI.Point();
 
     /**
      * Whether this sprite is renderable or not
@@ -10942,55 +10750,57 @@ PIXI.TilingSprite = function(texture, width, height)
      */
     this.blendMode = PIXI.blendModes.NORMAL;
 
-    
+    /**
+     * The CanvasBuffer object that the tiled texture is drawn to.
+     *
+     * @property canvasBuffer
+     * @type PIXI.CanvasBuffer
+     */
+    this.canvasBuffer = null;
+
+    /**
+     * An internal Texture object that holds the tiling texture that was generated from TilingSprite.texture.
+     *
+     * @property tilingTexture
+     * @type PIXI.Texture
+     */
+    this.tilingTexture = null;
+
+    /**
+     * The Context fill pattern that is used to draw the TilingSprite in Canvas mode only (will be null in WebGL).
+     *
+     * @property tilePattern
+     * @type PIXI.Texture
+     */
+    this.tilePattern = null;
+
+    /**
+     * If true the TilingSprite will run generateTexture on its **next** render pass.
+     * This is set by the likes of Phaser.LoadTexture.setFrame.
+     *
+     * @property refreshTexture
+     * @type Boolean
+     * @default true
+     */
+    this.refreshTexture = true;
+
+    this.frameWidth = 0;
+    this.frameHeight = 0;
 
 };
 
-// constructor
 PIXI.TilingSprite.prototype = Object.create(PIXI.Sprite.prototype);
 PIXI.TilingSprite.prototype.constructor = PIXI.TilingSprite;
 
-
-/**
- * The width of the sprite, setting this will actually modify the scale to achieve the value set
- *
- * @property width
- * @type Number
- */
-Object.defineProperty(PIXI.TilingSprite.prototype, 'width', {
-    get: function() {
-        return this._width;
-    },
-    set: function(value) {
-        
-        this._width = value;
-    }
-});
-
-/**
- * The height of the TilingSprite, setting this will actually modify the scale to achieve the value set
- *
- * @property height
- * @type Number
- */
-Object.defineProperty(PIXI.TilingSprite.prototype, 'height', {
-    get: function() {
-        return  this._height;
-    },
-    set: function(value) {
-        this._height = value;
-    }
-});
-
 PIXI.TilingSprite.prototype.setTexture = function(texture)
 {
-    if (this.texture === texture) return;
+    if (this.texture !== texture)
+    {
+        this.texture = texture;
+        this.refreshTexture = true;
+        this.cachedTint = 0xFFFFFF;
+    }
 
-    this.texture = texture;
-
-    this.refreshTexture = true;
-
-    this.cachedTint = 0xFFFFFF;
 };
 
 /**
@@ -11002,8 +10812,10 @@ PIXI.TilingSprite.prototype.setTexture = function(texture)
 */
 PIXI.TilingSprite.prototype._renderWebGL = function(renderSession)
 {
-    if (this.visible === false || this.alpha === 0) return;
-    var i,j;
+    if (this.visible === false || this.alpha === 0)
+    {
+        return;
+    }
 
     if (this._mask)
     {
@@ -11018,32 +10830,42 @@ PIXI.TilingSprite.prototype._renderWebGL = function(renderSession)
         renderSession.filterManager.pushFilter(this._filterBlock);
     }
 
-   
-
-    if (!this.tilingTexture || this.refreshTexture)
+    if (this.refreshTexture)
     {
         this.generateTilingTexture(true);
 
-        if (this.tilingTexture && this.tilingTexture.needsUpdate)
+        if (this.tilingTexture)
         {
-            renderSession.renderer.updateTexture(this.tilingTexture.baseTexture);
-            this.tilingTexture.needsUpdate = false;
+            if (this.tilingTexture.needsUpdate)
+            {
+                renderSession.renderer.updateTexture(this.tilingTexture.baseTexture);
+                this.tilingTexture.needsUpdate = false;
+            }
+        }
+        else
+        {
+            return;
         }
     }
-    else
-    {
-        renderSession.spriteBatch.renderTilingSprite(this);
-    }
-    // simple render children!
-    for (i=0,j=this.children.length; i<j; i++)
+    
+    renderSession.spriteBatch.renderTilingSprite(this);
+
+    for (var i = 0; i < this.children.length; i++)
     {
         this.children[i]._renderWebGL(renderSession);
     }
 
     renderSession.spriteBatch.stop();
 
-    if (this._filters) renderSession.filterManager.popFilter();
-    if (this._mask) renderSession.maskManager.popMask(this._mask, renderSession);
+    if (this._filters)
+    {
+        renderSession.filterManager.popFilter();
+    }
+
+    if (this._mask)
+    {
+        renderSession.maskManager.popMask(this._mask, renderSession);
+    }
     
     renderSession.spriteBatch.start();
 };
@@ -11057,7 +10879,10 @@ PIXI.TilingSprite.prototype._renderWebGL = function(renderSession)
 */
 PIXI.TilingSprite.prototype._renderCanvas = function(renderSession)
 {
-    if (this.visible === false || this.alpha === 0)return;
+    if (this.visible === false || this.alpha === 0)
+    {
+        return;
+    }
     
     var context = renderSession.context;
 
@@ -11068,26 +10893,23 @@ PIXI.TilingSprite.prototype._renderCanvas = function(renderSession)
 
     context.globalAlpha = this.worldAlpha;
     
-    var transform = this.worldTransform;
-
-    var i,j;
-
+    var wt = this.worldTransform;
     var resolution = renderSession.resolution;
 
-    context.setTransform(transform.a * resolution,
-                         transform.b * resolution,
-                         transform.c * resolution,
-                         transform.d * resolution,
-                         transform.tx * resolution,
-                         transform.ty * resolution);
+    context.setTransform(wt.a * resolution,
+                         wt.b * resolution,
+                         wt.c * resolution,
+                         wt.d * resolution,
+                         wt.tx * resolution,
+                         wt.ty * resolution);
 
-    if (!this.__tilePattern ||  this.refreshTexture)
+    if (this.refreshTexture)
     {
         this.generateTilingTexture(false);
     
         if (this.tilingTexture)
         {
-            this.__tilePattern = context.createPattern(this.tilingTexture.baseTexture.source, 'repeat');
+            this.tilePattern = context.createPattern(this.tilingTexture.baseTexture.source, 'repeat');
         }
         else
         {
@@ -11095,7 +10917,9 @@ PIXI.TilingSprite.prototype._renderCanvas = function(renderSession)
         }
     }
 
-    // check blend mode
+    var sessionBlendMode = renderSession.currentBlendMode;
+
+    //  Check blend mode
     if (this.blendMode !== renderSession.currentBlendMode)
     {
         renderSession.currentBlendMode = this.blendMode;
@@ -11108,17 +10932,29 @@ PIXI.TilingSprite.prototype._renderCanvas = function(renderSession)
     tilePosition.x %= this.tilingTexture.baseTexture.width;
     tilePosition.y %= this.tilingTexture.baseTexture.height;
 
-    // offset - make sure to account for the anchor point..
-    context.scale(tileScale.x,tileScale.y);
+    //  Translate
+    context.scale(tileScale.x, tileScale.y);
     context.translate(tilePosition.x + (this.anchor.x * -this._width), tilePosition.y + (this.anchor.y * -this._height));
 
-    context.fillStyle = this.__tilePattern;
+    context.fillStyle = this.tilePattern;
 
-    context.fillRect(-tilePosition.x,
-                    -tilePosition.y,
-                    this._width / tileScale.x,
-                    this._height / tileScale.y);
+    var tx = -tilePosition.x;
+    var ty = -tilePosition.y;
+    var tw = this._width / tileScale.x;
+    var th = this._height / tileScale.y;
 
+    //  Allow for pixel rounding
+    if (renderSession.roundPixels)
+    {
+        tx | 0;
+        ty | 0;
+        tw | 0;
+        th | 0;
+    }
+
+    context.fillRect(tx, ty, tw, th);
+
+    //  Translate back again
     context.scale(1 / tileScale.x, 1 / tileScale.y);
     context.translate(-tilePosition.x + (this.anchor.x * this._width), -tilePosition.y + (this.anchor.y * this._height));
 
@@ -11127,12 +10963,103 @@ PIXI.TilingSprite.prototype._renderCanvas = function(renderSession)
         renderSession.maskManager.popMask(renderSession);
     }
 
-    for (i=0,j=this.children.length; i<j; i++)
+    for (var i = 0; i < this.children.length; i++)
     {
         this.children[i]._renderCanvas(renderSession);
     }
+
+    //  Reset blend mode
+    if (sessionBlendMode !== this.blendMode)
+    {
+        renderSession.currentBlendMode = sessionBlendMode;
+        context.globalCompositeOperation = PIXI.blendModesCanvas[sessionBlendMode];
+    }
+
 };
 
+/**
+ * When the texture is updated, this event will fire to update the scale and frame
+ *
+ * @method onTextureUpdate
+ * @param event
+ * @private
+ */
+PIXI.TilingSprite.prototype.onTextureUpdate = function()
+{
+   // overriding the sprite version of this!
+};
+
+/**
+* 
+* @method generateTilingTexture
+* 
+* @param forcePowerOfTwo {Boolean} Whether we want to force the texture to be a power of two
+*/
+PIXI.TilingSprite.prototype.generateTilingTexture = function(forcePowerOfTwo)
+{
+    if (!this.texture.baseTexture.hasLoaded)
+    {
+        return;
+    }
+
+    var texture = this.texture;
+    var frame = texture.frame;
+
+    var targetWidth = this._frame.sourceSizeW;
+    var targetHeight = this._frame.sourceSizeH;
+
+    var dx = 0;
+    var dy = 0;
+
+    if (this._frame.trimmed)
+    {
+        dx = this._frame.spriteSourceSizeX;
+        dy = this._frame.spriteSourceSizeY;
+    }
+
+    if (forcePowerOfTwo)
+    {
+        targetWidth = PIXI.getNextPowerOfTwo(targetWidth);
+        targetHeight = PIXI.getNextPowerOfTwo(targetHeight);
+    }
+
+    if (this.canvasBuffer)
+    {
+        this.canvasBuffer.resize(targetWidth, targetHeight);
+        this.tilingTexture.baseTexture.width = targetWidth;
+        this.tilingTexture.baseTexture.height = targetHeight;
+        this.tilingTexture.needsUpdate = true;
+    }
+    else
+    {
+        this.canvasBuffer = new PIXI.CanvasBuffer(targetWidth, targetHeight);
+        this.tilingTexture = PIXI.Texture.fromCanvas(this.canvasBuffer.canvas);
+        this.tilingTexture.isTiling = true;
+        this.tilingTexture.needsUpdate = true;
+    }
+
+    //  Debug
+    this.canvasBuffer.context.strokeStyle = 'rgb(0,255,0)';
+    this.canvasBuffer.context.strokeRect(0, 0, targetWidth, targetHeight);
+
+    this.canvasBuffer.context.drawImage(texture.baseTexture.source,
+                           texture.crop.x,
+                           texture.crop.y,
+                           texture.crop.width,
+                           texture.crop.height,
+                           dx,
+                           dy,
+                           texture.crop.width,
+                           texture.crop.height);
+
+    this.tileScaleOffset.x = frame.width / targetWidth;
+    this.tileScaleOffset.y = frame.height / targetHeight;
+
+    this.refreshTexture = false;
+
+    this.tilingTexture.baseTexture._powerOf2 = true;
+
+};
 
 /**
 * Returns the framing rectangle of the sprite as a PIXI.Rectangle object
@@ -11212,133 +11139,6 @@ PIXI.TilingSprite.prototype.getBounds = function()
     return bounds;
 };
 
-
-
-/**
- * When the texture is updated, this event will fire to update the scale and frame
- *
- * @method onTextureUpdate
- * @param event
- * @private
- */
-PIXI.TilingSprite.prototype.onTextureUpdate = function()
-{
-   // overriding the sprite version of this!
-};
-
-
-/**
-* 
-* @method generateTilingTexture
-* 
-* @param forcePowerOfTwo {Boolean} Whether we want to force the texture to be a power of two
-*/
-PIXI.TilingSprite.prototype.generateTilingTexture = function(forcePowerOfTwo)
-{
-    if (!this.texture.baseTexture.hasLoaded) return;
-
-    var texture = this.originalTexture || this.texture;
-    var frame = texture.frame;
-    var targetWidth, targetHeight;
-
-    //  Check that the frame is the same size as the base texture.
-    var isFrame = frame.width !== texture.baseTexture.width || frame.height !== texture.baseTexture.height;
-
-    var newTextureRequired = false;
-
-    if (!forcePowerOfTwo)
-    {
-        if (isFrame)
-        {
-            if (texture.crop)
-            {
-                targetWidth = texture.crop.width;
-                targetHeight = texture.crop.height;
-            }
-            else
-            {
-                targetWidth = frame.width;
-                targetHeight = frame.height;
-            }
-           
-            newTextureRequired = true;
-        }
-    }
-    else
-    {
-        if (texture.crop)
-        {
-            targetWidth = PIXI.getNextPowerOfTwo(texture.crop.width);
-            targetHeight = PIXI.getNextPowerOfTwo(texture.crop.height);
-        }
-        else
-        {
-            targetWidth = PIXI.getNextPowerOfTwo(frame.width);
-            targetHeight = PIXI.getNextPowerOfTwo(frame.height);
-        }
-            newTextureRequired = true;
-
-        //  If the BaseTexture dimensions don't match the texture frame then we need a new texture anyway because it's part of a texture atlas
-        // if (frame.width !== targetWidth || frame.height !== targetHeight || texture.baseTexture.width !== targetWidth || texture.baseTexture.height || targetHeight) newTextureRequired = true;
-    }
-
-    if (newTextureRequired)
-    {
-        var canvasBuffer;
-
-        if (this.tilingTexture && this.tilingTexture.isTiling)
-        {
-            canvasBuffer = this.tilingTexture.canvasBuffer;
-            canvasBuffer.resize(targetWidth, targetHeight);
-            this.tilingTexture.baseTexture.width = targetWidth;
-            this.tilingTexture.baseTexture.height = targetHeight;
-            this.tilingTexture.needsUpdate = true;
-        }
-        else
-        {
-            canvasBuffer = new PIXI.CanvasBuffer(targetWidth, targetHeight);
-
-            this.tilingTexture = PIXI.Texture.fromCanvas(canvasBuffer.canvas);
-            this.tilingTexture.canvasBuffer = canvasBuffer;
-            this.tilingTexture.isTiling = true;
-        }
-
-        canvasBuffer.context.drawImage(texture.baseTexture.source,
-                               texture.crop.x,
-                               texture.crop.y,
-                               texture.crop.width,
-                               texture.crop.height,
-                               0,
-                               0,
-                               targetWidth,
-                               targetHeight);
-
-        this.tileScaleOffset.x = frame.width / targetWidth;
-        this.tileScaleOffset.y = frame.height / targetHeight;
-    }
-    else
-    {
-        //  TODO - switching?
-        if (this.tilingTexture && this.tilingTexture.isTiling)
-        {
-            // destroy the tiling texture!
-            // TODO could store this somewhere?
-            this.tilingTexture.destroy(true);
-        }
-
-        this.tileScaleOffset.x = 1;
-        this.tileScaleOffset.y = 1;
-        this.tilingTexture = texture;
-    }
-
-    this.refreshTexture = false;
-    
-    this.originalTexture = this.texture;
-    this.texture = this.tilingTexture;
-    
-    this.tilingTexture.baseTexture._powerOf2 = true;
-};
-
 PIXI.TilingSprite.prototype.destroy = function () {
 
     PIXI.Sprite.prototype.destroy.call(this);
@@ -11354,6 +11154,42 @@ PIXI.TilingSprite.prototype.destroy = function () {
     }
 
 };
+
+/**
+ * The width of the sprite, setting this will actually modify the scale to achieve the value set
+ *
+ * @property width
+ * @type Number
+ */
+Object.defineProperty(PIXI.TilingSprite.prototype, 'width', {
+
+    get: function() {
+        return this._width;
+    },
+
+    set: function(value) {
+        this._width = value;
+    }
+
+});
+
+/**
+ * The height of the TilingSprite, setting this will actually modify the scale to achieve the value set
+ *
+ * @property height
+ * @type Number
+ */
+Object.defineProperty(PIXI.TilingSprite.prototype, 'height', {
+
+    get: function() {
+        return  this._height;
+    },
+
+    set: function(value) {
+        this._height = value;
+    }
+
+});
 
 /**
  * @author Mat Groves http://matgroves.com/ @Doormat23
@@ -11447,7 +11283,6 @@ PIXI.BaseTexture = function(source, scaleMode)
     this._glTextures = [];
 
     /**
-     *
      * Set this to true if a mipmap of this texture needs to be generated. This value needs to be set before the texture is used
      * Also the texture must be a power of two size to work
      * 
@@ -11455,8 +11290,6 @@ PIXI.BaseTexture = function(source, scaleMode)
      * @type {Boolean}
      */
     this.mipmap = false;
-    // used for webGL texture updating...
-    // TODO - this needs to be addressed
 
     /**
      * @property _dirty
@@ -11465,36 +11298,17 @@ PIXI.BaseTexture = function(source, scaleMode)
      */
     this._dirty = [true, true, true, true];
 
-    if(!source)return;
+    if (!source)
+    {
+        return;
+    }
 
-    if((this.source.complete || this.source.getContext) && this.source.width && this.source.height)
+    if ((this.source.complete || this.source.getContext) && this.source.width && this.source.height)
     {
         this.hasLoaded = true;
         this.width = this.source.naturalWidth || this.source.width;
         this.height = this.source.naturalHeight || this.source.height;
         this.dirty();
-    }
-    else
-    {
-        /*
-        var scope = this;
-
-        this.source.onload = function() {
-
-            scope.hasLoaded = true;
-            scope.width = scope.source.naturalWidth || scope.source.width;
-            scope.height = scope.source.naturalHeight || scope.source.height;
-
-            scope.dirty();
-
-            // add it to somewhere...
-            scope.dispatchEvent( { type: 'loaded', content: scope } );
-        };
-
-        this.source.onerror = function() {
-            scope.dispatchEvent( { type: 'error', content: scope } );
-        };
-        */
     }
 
     /**
@@ -11514,7 +11328,23 @@ PIXI.BaseTexture = function(source, scaleMode)
 
 PIXI.BaseTexture.prototype.constructor = PIXI.BaseTexture;
 
-// PIXI.EventTarget.mixin(PIXI.BaseTexture.prototype);
+/**
+ * Forces this BaseTexture to be set as loaded, with the given width and height.
+ * Then calls BaseTexture.dirty.
+ * Important for when you don't want to modify the source object by forcing in `complete` or dimension properties it may not have.
+ *
+ * @method forceLoaded
+ * @param {number} width - The new width to force the BaseTexture to be.
+ * @param {number} height - The new height to force the BaseTexture to be.
+ */
+PIXI.BaseTexture.prototype.forceLoaded = function(width, height)
+{
+    this.hasLoaded = true;
+    this.width = width;
+    this.height = height;
+    this.dirty();
+
+};
 
 /**
  * Destroys this base texture
@@ -11523,7 +11353,7 @@ PIXI.BaseTexture.prototype.constructor = PIXI.BaseTexture;
  */
 PIXI.BaseTexture.prototype.destroy = function()
 {
-    if(this.imageUrl)
+    if (this.imageUrl)
     {
         delete PIXI.BaseTextureCache[this.imageUrl];
         delete PIXI.TextureCache[this.imageUrl];
@@ -11747,6 +11577,14 @@ PIXI.Texture = function(baseTexture, frame, crop, trim)
     this.valid = false;
 
     /**
+     * Is this a tiling texture? As used by the likes of a TilingSprite.
+     *
+     * @property isTiling
+     * @type Boolean
+     */
+    this.isTiling = false;
+
+    /**
      * This will let a renderer know that a texture has been updated (used mainly for webGL uv updates)
      *
      * @property requiresUpdate
@@ -11793,14 +11631,10 @@ PIXI.Texture = function(baseTexture, frame, crop, trim)
         if (this.noFrame) frame = new PIXI.Rectangle(0, 0, baseTexture.width, baseTexture.height);
         this.setFrame(frame);
     }
-    // else
-    // {
-    //     baseTexture.addEventListener('loaded', this.onBaseTextureLoaded.bind(this));
-    // }
+
 };
 
 PIXI.Texture.prototype.constructor = PIXI.Texture;
-// PIXI.EventTarget.mixin(PIXI.Texture.prototype);
 
 /**
  * Called when the base texture is loaded
@@ -11811,13 +11645,13 @@ PIXI.Texture.prototype.constructor = PIXI.Texture;
 PIXI.Texture.prototype.onBaseTextureLoaded = function()
 {
     var baseTexture = this.baseTexture;
-    // baseTexture.removeEventListener('loaded', this.onLoaded);
 
-    if (this.noFrame) this.frame = new PIXI.Rectangle(0, 0, baseTexture.width, baseTexture.height);
+    if (this.noFrame)
+    {
+        this.frame = new PIXI.Rectangle(0, 0, baseTexture.width, baseTexture.height);
+    }
 
     this.setFrame(this.frame);
-
-    // this.dispatchEvent( { type: 'update', content: this } );
 };
 
 /**
@@ -12135,6 +11969,8 @@ PIXI.RenderTexture = function(width, height, renderer, scaleMode, resolution)
      */
     this.valid = true;
 
+    this.tempMatrix = new Phaser.Matrix();
+
     this._updateUvs();
 };
 
@@ -12205,43 +12041,43 @@ PIXI.RenderTexture.prototype.clear = function()
  */
 PIXI.RenderTexture.prototype.renderWebGL = function(displayObject, matrix, clear)
 {
-    if(!this.valid)return;
-    //TOOD replace position with matrix..
+    if (!this.valid)
+    {
+        return;
+    }
    
-    //Lets create a nice matrix to apply to our display object. Frame buffers come in upside down so we need to flip the matrix 
-    var wt = displayObject.worldTransform;
-    wt.identity();
-    wt.translate(0, this.projection.y * 2);
-    if(matrix)wt.append(matrix);
-    wt.scale(1,-1);
+    //  Frame buffers come in upside down so we need to flip the matrix 
+    matrix.translate(0, this.projection.y * 2);
+    matrix.scale(1, -1);
 
-    // setWorld Alpha to ensure that the object is renderer at full opacity
+    //  Set worldAlpha to ensure that the object is renderer at full opacity
     displayObject.worldAlpha = 1;
 
-    // Time to update all the children of the displayObject with the new matrix..    
-    var children = displayObject.children;
-
-    for(var i=0,j=children.length; i<j; i++)
+    //  Time to update all the children of the displayObject with the new matrix.
+    for (var i = 0; i < displayObject.children.length; i++)
     {
-        children[i].updateTransform();
+        displayObject.children[i].updateTransform();
     }
     
-    // time for the webGL fun stuff!
+    //  Time for the webGL fun stuff!
     var gl = this.renderer.gl;
 
     gl.viewport(0, 0, this.width * this.resolution, this.height * this.resolution);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.textureBuffer.frameBuffer );
 
-    if(clear)this.textureBuffer.clear();
+    if (clear)
+    {
+        this.textureBuffer.clear();
+    }
 
     this.renderer.spriteBatch.dirty = true;
 
-    this.renderer.renderDisplayObject(displayObject, this.projection, this.textureBuffer.frameBuffer);
+    this.renderer.renderDisplayObject(displayObject, this.projection, this.textureBuffer.frameBuffer, matrix);
 
     this.renderer.spriteBatch.dirty = true;
+
 };
-
 
 /**
  * This function will draw the display object to the texture.
@@ -12254,24 +12090,24 @@ PIXI.RenderTexture.prototype.renderWebGL = function(displayObject, matrix, clear
  */
 PIXI.RenderTexture.prototype.renderCanvas = function(displayObject, matrix, clear)
 {
-    if(!this.valid)return;
+    if (!this.valid)
+    {
+        return;
+    }
 
-    var wt = displayObject.worldTransform;
-    wt.identity();
-    if(matrix)wt.append(matrix);
-    
     // setWorld Alpha to ensure that the object is renderer at full opacity
     displayObject.worldAlpha = 1;
 
-    // Time to update all the children of the displayObject with the new matrix..    
-    var children = displayObject.children;
-
-    for(var i = 0, j = children.length; i < j; i++)
+    // Time to update all the children of the displayObject with the new matrix (what new matrix? there isn't one!)
+    for (var i = 0; i < displayObject.children.length; i++)
     {
-        children[i].updateTransform();
+        displayObject.children[i].updateTransform();
     }
 
-    if(clear)this.textureBuffer.clear();
+    if (clear)
+    {
+        this.textureBuffer.clear();
+    }
 
     var context = this.textureBuffer.context;
 
@@ -12279,7 +12115,7 @@ PIXI.RenderTexture.prototype.renderCanvas = function(displayObject, matrix, clea
 
     this.renderer.resolution = this.resolution;
 
-    this.renderer.renderDisplayObject(displayObject, context);
+    this.renderer.renderDisplayObject(displayObject, context, matrix);
 
     this.renderer.resolution = realResolution;
 };
@@ -12457,7 +12293,7 @@ PIXI.AbstractFilter.prototype.apply = function(frameBuffer)
 */
 var Phaser = Phaser || {
 
-	VERSION: '2.3.0',
+	VERSION: '2.4.0-dev',
 	GAMES: [],
 
     AUTO: 0,
@@ -12498,6 +12334,8 @@ var Phaser = Phaser || {
     MATRIX: 24,
     POINT: 25,
     ROUNDEDRECTANGLE: 26,
+    CREATURE: 27,
+    VIDEO: 28,
 
     /**
      * Various blend modes supported by pixi. IMPORTANT - The WebGL renderer only supports the NORMAL, ADD, MULTIPLY and SCREEN blend modes.
@@ -14275,7 +14113,7 @@ Object.defineProperty(Phaser.Line.prototype, "length", {
 
 /**
 * @name Phaser.Line#angle
-* @property {number} angle - Gets the angle of the line.
+* @property {number} angle - Gets the angle of the line in radians.
 * @readonly
 */
 Object.defineProperty(Phaser.Line.prototype, "angle", {
@@ -14547,62 +14385,74 @@ Phaser.Line.reflect = function (a, b) {
 };
 
 /**
- * @author Mat Groves http://matgroves.com/ @Doormat23
- */
+* @author       Mat Groves http://matgroves.com/ @Doormat23
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
 
 /**
- * The Matrix class is now an object, which makes it a lot faster, 
- * here is a representation of it : 
- * | a | b | tx|
- * | c | d | ty|
- * | 0 | 0 | 1 |
- *
- * @class Matrix
- * @constructor
- */
-Phaser.Matrix = function()
-{
-    /**
-     * @property a
-     * @type Number
-     * @default 1
-     */
-    this.a = 1;
+* The Matrix is a 3x3 matrix mostly used for display transforms within the renderer.
+* 
+* It is represented like so:
+* 
+* | a | b | tx |
+* | c | d | ty |
+* | 0 | 0 | 1 |
+*
+* @class Phaser.Matrix
+* @constructor
+* @param {number} [a=1]
+* @param {number} [b=0]
+* @param {number} [c=0]
+* @param {number} [d=1]
+* @param {number} [tx=0]
+* @param {number} [ty=0]
+*/
+Phaser.Matrix = function (a, b, c, d, tx, ty) {
+
+    a = a || 1;
+    b = b || 0;
+    c = c || 0;
+    d = d || 1;
+    tx = tx || 0;
+    ty = ty || 0;
 
     /**
-     * @property b
-     * @type Number
-     * @default 0
-     */
-    this.b = 0;
+    * @property {number} a
+    * @default 1
+    */
+    this.a = a;
 
     /**
-     * @property c
-     * @type Number
-     * @default 0
-     */
-    this.c = 0;
+    * @property {number} b
+    * @default 0
+    */
+    this.b = b;
 
     /**
-     * @property d
-     * @type Number
-     * @default 1
-     */
-    this.d = 1;
+    * @property {number} c
+    * @default 0
+    */
+    this.c = c;
 
     /**
-     * @property tx
-     * @type Number
-     * @default 0
-     */
-    this.tx = 0;
+    * @property {number} d
+    * @default 1
+    */
+    this.d = d;
 
     /**
-     * @property ty
-     * @type Number
-     * @default 0
-     */
-    this.ty = 0;
+    * @property {number} tx
+    * @default 0
+    */
+    this.tx = tx;
+
+    /**
+    * @property {number} ty
+    * @default 0
+    */
+    this.ty = ty;
 
     /**
     * @property {number} type - The const type of this object.
@@ -14612,221 +14462,309 @@ Phaser.Matrix = function()
 
 };
 
-/**
- * Creates a Matrix object based on the given array. The Element to Matrix mapping order is as follows:
- *
- * a = array[0]
- * b = array[1]
- * c = array[3]
- * d = array[4]
- * tx = array[2]
- * ty = array[5]
- *
- * @method fromArray
- * @param array {Array} The array that the matrix will be populated from.
- */
-Phaser.Matrix.prototype.fromArray = function(array)
-{
-    this.a = array[0];
-    this.b = array[1];
-    this.c = array[3];
-    this.d = array[4];
-    this.tx = array[2];
-    this.ty = array[5];
-};
+Phaser.Matrix.prototype = {
 
-/**
- * Creates an array from the current Matrix object.
- *
- * @method toArray
- * @param transpose {Boolean} Whether we need to transpose the matrix or not
- * @return {Array} the newly created array which contains the matrix
- */
-Phaser.Matrix.prototype.toArray = function(transpose)
-{
-    if (!this.array)
-    {
-        this.array = new PIXI.Float32Array(9);
+    /**
+    * Sets the values of this Matrix to the values in the given array.
+    * 
+    * The Array elements should be set as follows:
+    *
+    * a = array[0]
+    * b = array[1]
+    * c = array[3]
+    * d = array[4]
+    * tx = array[2]
+    * ty = array[5]
+    *
+    * @method Phaser.Matrix#fromArray
+    * @param {Array} array - The array to copy from.
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    fromArray: function (array) {
+
+        return this.setTo(array[0], array[1], array[3], array[4], array[2], array[5]);
+
+    },
+
+    /**
+    * Sets the values of this Matrix to the given values.
+    *
+    * @method Phaser.Matrix#setTo
+    * @param {number} a
+    * @param {number} b
+    * @param {number} c
+    * @param {number} d
+    * @param {number} tx
+    * @param {number} ty
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    setTo: function (a, b, c, d, tx, ty) {
+
+        this.a = a;
+        this.b = b;
+        this.c = c;
+        this.d = d;
+        this.tx = tx;
+        this.ty = ty;
+
+        return this;
+
+    },
+
+    /**
+     * Creates a new Matrix object based on the values of this Matrix.
+     * If you provide the output parameter the values of this Matrix will be copied over to it.
+     * If the output parameter is blank a new Matrix object will be created.
+     *
+     * @method Phaser.Matrix#clone
+     * @param {Phaser.Matrix} [output] - If provided the values of this Matrix will be copied to it, otherwise a new Matrix object is created.
+     * @return {Phaser.Matrix} A clone of this Matrix.
+     */
+    clone: function (output) {
+
+        if (typeof output === "undefined" || output === null)
+        {
+            output = new Phaser.Matrix(this.a, this.b, this.c, this.d, this.tx, this.ty);
+        }
+        else
+        {
+            output.a = this.a;
+            output.b = this.b;
+            output.c = this.c;
+            output.d = this.d;
+            output.tx = this.tx;
+            output.ty = this.ty;
+        }
+
+        return output;
+
+    },
+
+    /**
+    * Copies the properties from this Matrix to the given Matrix.
+    *
+    * @method Phaser.Matrix#copyTo
+    * @param {Phaser.Matrix} matrix - The Matrix to copy from.
+    * @return {Phaser.Matrix} The destination Matrix object.
+    */
+    copyTo: function (matrix) {
+
+        matrix.copyFrom(this);
+
+        return matrix;
+
+    },
+
+    /**
+    * Copies the properties from the given Matrix into this Matrix.
+    *
+    * @method Phaser.Matrix#copyFrom
+    * @param {Phaser.Matrix} matrix - The Matrix to copy from.
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    copyFrom: function (matrix) {
+
+        this.a = matrix.a;
+        this.b = matrix.b;
+        this.c = matrix.c;
+        this.d = matrix.d;
+        this.tx = matrix.tx;
+        this.ty = matrix.ty;
+
+        return this;
+
+    },
+
+    /**
+    * Creates a Float32 Array with values populated from this Matrix object.
+    *
+    * @method Phaser.Matrix#toArray
+    * @param {boolean} [transpose=false] - Whether the values in the array are transposed or not.
+    * @param {PIXI.Float32Array} [array] - If provided the values will be set into this array, otherwise a new Float32Array is created.
+    * @return {PIXI.Float32Array} The newly created array which contains the matrix.
+    */
+    toArray: function (transpose, array) {
+
+        if (typeof array === 'undefined') { array = new PIXI.Float32Array(9); }
+
+        if (transpose)
+        {
+            array[0] = this.a;
+            array[1] = this.b;
+            array[2] = 0;
+            array[3] = this.c;
+            array[4] = this.d;
+            array[5] = 0;
+            array[6] = this.tx;
+            array[7] = this.ty;
+            array[8] = 1;
+        }
+        else
+        {
+            array[0] = this.a;
+            array[1] = this.c;
+            array[2] = this.tx;
+            array[3] = this.b;
+            array[4] = this.d;
+            array[5] = this.ty;
+            array[6] = 0;
+            array[7] = 0;
+            array[8] = 1;
+        }
+
+        return array;
+
+    },
+
+    /**
+    * Get a new position with the current transformation applied.
+    * 
+    * Can be used to go from a childs coordinate space to the world coordinate space (e.g. rendering)
+    *
+    * @method Phaser.Matrix#apply
+    * @param {Phaser.Point} pos - The origin Point.
+    * @param {Phaser.Point} [newPos] - The point that the new position is assigned to. This can be same as input point.
+    * @return {Phaser.Point} The new point, transformed through this matrix.
+    */
+    apply: function (pos, newPos) {
+
+        if (typeof newPos === 'undefined') { newPos = new Phaser.Point(); }
+
+        newPos.x = this.a * pos.x + this.c * pos.y + this.tx;
+        newPos.y = this.b * pos.x + this.d * pos.y + this.ty;
+
+        return newPos;
+
+    },
+
+    /**
+    * Get a new position with the inverse of the current transformation applied.
+    * 
+    * Can be used to go from the world coordinate space to a childs coordinate space. (e.g. input)
+    *
+    * @method Phaser.Matrix#applyInverse
+    * @param {Phaser.Point} pos - The origin Point.
+    * @param {Phaser.Point} [newPos] - The point that the new position is assigned to. This can be same as input point.
+    * @return {Phaser.Point} The new point, inverse transformed through this matrix.
+    */
+    applyInverse: function (pos, newPos) {
+
+        if (typeof newPos === 'undefined') { newPos = new Phaser.Point(); }
+
+        var id = 1 / (this.a * this.d + this.c * -this.b);
+        var x = pos.x;
+        var y = pos.y;
+
+        newPos.x = this.d * id * x + -this.c * id * y + (this.ty * this.c - this.tx * this.d) * id;
+        newPos.y = this.a * id * y + -this.b * id * x + (-this.ty * this.a + this.tx * this.b) * id;
+
+        return newPos;
+
+    },
+
+    /**
+    * Translates the matrix on the x and y.
+    * This is the same as Matrix.tx += x.
+    * 
+    * @method Phaser.Matrix#translate
+    * @param {number} x - The x value to translate on.
+    * @param {number} y - The y value to translate on.
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    translate: function (x, y) {
+
+        this.tx += x;
+        this.ty += y;
+        
+        return this;
+
+    },
+
+    /**
+    * Applies a scale transformation to this matrix.
+    * 
+    * @method Phaser.Matrix#scale
+    * @param {number} x - The amount to scale horizontally.
+    * @param {number} y - The amount to scale vertically.
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    scale: function (x, y) {
+
+        this.a *= x;
+        this.d *= y;
+        this.c *= x;
+        this.b *= y;
+        this.tx *= x;
+        this.ty *= y;
+
+        return this;
+
+    },
+
+    /**
+    * Applies a rotation transformation to this matrix.
+    * 
+    * @method Phaser.Matrix#rotate
+    * @param {number} angle - The angle to rotate by, given in radians.
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    rotate: function (angle) {
+
+        var cos = Math.cos(angle);
+        var sin = Math.sin(angle);
+
+        var a1 = this.a;
+        var c1 = this.c;
+        var tx1 = this.tx;
+
+        this.a = a1 * cos-this.b * sin;
+        this.b = a1 * sin+this.b * cos;
+        this.c = c1 * cos-this.d * sin;
+        this.d = c1 * sin+this.d * cos;
+        this.tx = tx1 * cos - this.ty * sin;
+        this.ty = tx1 * sin + this.ty * cos;
+     
+        return this;
+
+    },
+
+    /**
+    * Appends the given Matrix to this Matrix.
+    * 
+    * @method Phaser.Matrix#append
+    * @param {Phaser.Matrix} matrix - The matrix to append to this one.
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    append: function (matrix) {
+
+        var a1 = this.a;
+        var b1 = this.b;
+        var c1 = this.c;
+        var d1 = this.d;
+
+        this.a  = matrix.a * a1 + matrix.b * c1;
+        this.b  = matrix.a * b1 + matrix.b * d1;
+        this.c  = matrix.c * a1 + matrix.d * c1;
+        this.d  = matrix.c * b1 + matrix.d * d1;
+
+        this.tx = matrix.tx * a1 + matrix.ty * c1 + this.tx;
+        this.ty = matrix.tx * b1 + matrix.ty * d1 + this.ty;
+        
+        return this;
+
+    },
+
+    /**
+    * Resets this Matrix to an identity (default) matrix.
+    * 
+    * @method identity
+    * @return {Phaser.Matrix} This Matrix object.
+    */
+    identity: function () {
+
+        return this.setTo(1, 0, 0, 1, 0, 0);
     }
 
-    var array = this.array;
-
-    if (transpose)
-    {
-        array[0] = this.a;
-        array[1] = this.b;
-        array[2] = 0;
-        array[3] = this.c;
-        array[4] = this.d;
-        array[5] = 0;
-        array[6] = this.tx;
-        array[7] = this.ty;
-        array[8] = 1;
-    }
-    else
-    {
-        array[0] = this.a;
-        array[1] = this.c;
-        array[2] = this.tx;
-        array[3] = this.b;
-        array[4] = this.d;
-        array[5] = this.ty;
-        array[6] = 0;
-        array[7] = 0;
-        array[8] = 1;
-    }
-
-    return array;
-};
-
-/**
- * Get a new position with the current transformation applied.
- * Can be used to go from a child's coordinate space to the world coordinate space. (e.g. rendering)
- *
- * @method apply
- * @param pos {Point} The origin
- * @param [newPos] {Point} The point that the new position is assigned to (allowed to be same as input)
- * @return {Point} The new point, transformed through this matrix
- */
-Phaser.Matrix.prototype.apply = function(pos, newPos)
-{
-    newPos = newPos || new Phaser.Point();
-
-    var x = pos.x;
-    var y = pos.y;
-
-    newPos.x = this.a * x + this.c * y + this.tx;
-    newPos.y = this.b * x + this.d * y + this.ty;
-
-    return newPos;
-};
-
-/**
- * Get a new position with the inverse of the current transformation applied.
- * Can be used to go from the world coordinate space to a child's coordinate space. (e.g. input)
- *
- * @method applyInverse
- * @param pos {Point} The origin
- * @param [newPos] {Point} The point that the new position is assigned to (allowed to be same as input)
- * @return {Point} The new point, inverse-transformed through this matrix
- */
-Phaser.Matrix.prototype.applyInverse = function(pos, newPos)
-{
-    newPos = newPos || new Phaser.Point();
-
-    var id = 1 / (this.a * this.d + this.c * -this.b);
-    var x = pos.x;
-    var y = pos.y;
-
-    newPos.x = this.d * id * x + -this.c * id * y + (this.ty * this.c - this.tx * this.d) * id;
-    newPos.y = this.a * id * y + -this.b * id * x + (-this.ty * this.a + this.tx * this.b) * id;
-
-    return newPos;
-};
-
-/**
- * Translates the matrix on the x and y.
- * 
- * @method translate
- * @param {Number} x
- * @param {Number} y
- * @return {Matrix} This matrix. Good for chaining method calls.
- **/
-Phaser.Matrix.prototype.translate = function(x, y)
-{
-    this.tx += x;
-    this.ty += y;
-    
-    return this;
-};
-
-/**
- * Applies a scale transformation to the matrix.
- * 
- * @method scale
- * @param {Number} x The amount to scale horizontally
- * @param {Number} y The amount to scale vertically
- * @return {Matrix} This matrix. Good for chaining method calls.
- **/
-Phaser.Matrix.prototype.scale = function(x, y)
-{
-    this.a *= x;
-    this.d *= y;
-    this.c *= x;
-    this.b *= y;
-    this.tx *= x;
-    this.ty *= y;
-
-    return this;
-};
-
-
-/**
- * Applies a rotation transformation to the matrix.
- * @method rotate
- * @param {Number} angle The angle in radians.
- * @return {Matrix} This matrix. Good for chaining method calls.
- **/
-Phaser.Matrix.prototype.rotate = function(angle)
-{
-    var cos = Math.cos( angle );
-    var sin = Math.sin( angle );
-
-    var a1 = this.a;
-    var c1 = this.c;
-    var tx1 = this.tx;
-
-    this.a = a1 * cos-this.b * sin;
-    this.b = a1 * sin+this.b * cos;
-    this.c = c1 * cos-this.d * sin;
-    this.d = c1 * sin+this.d * cos;
-    this.tx = tx1 * cos - this.ty * sin;
-    this.ty = tx1 * sin + this.ty * cos;
- 
-    return this;
-};
-
-/**
- * Appends the given Matrix to this Matrix.
- * 
- * @method append
- * @param {Matrix} matrix
- * @return {Matrix} This matrix. Good for chaining method calls.
- */
-Phaser.Matrix.prototype.append = function(matrix)
-{
-    var a1 = this.a;
-    var b1 = this.b;
-    var c1 = this.c;
-    var d1 = this.d;
-
-    this.a  = matrix.a * a1 + matrix.b * c1;
-    this.b  = matrix.a * b1 + matrix.b * d1;
-    this.c  = matrix.c * a1 + matrix.d * c1;
-    this.d  = matrix.c * b1 + matrix.d * d1;
-
-    this.tx = matrix.tx * a1 + matrix.ty * c1 + this.tx;
-    this.ty = matrix.tx * b1 + matrix.ty * d1 + this.ty;
-    
-    return this;
-};
-
-/**
- * Resets this Matix to an identity (default) matrix.
- * 
- * @method identity
- * @return {Matrix} This matrix. Good for chaining method calls.
- */
-Phaser.Matrix.prototype.identity = function()
-{
-    this.a = 1;
-    this.b = 0;
-    this.c = 0;
-    this.d = 1;
-    this.tx = 0;
-    this.ty = 0;
-
-    return this;
 };
 
 Phaser.identityMatrix = new Phaser.Matrix();
@@ -16184,6 +16122,30 @@ Phaser.Rectangle.prototype = {
         this.y = Math.floor(this.y);
         this.width = Math.floor(this.width);
         this.height = Math.floor(this.height);
+
+    },
+
+    /**
+    * Runs Math.ceil() on both the x and y values of this Rectangle.
+    * @method Phaser.Rectangle#ceil
+    */
+    ceil: function () {
+
+        this.x = Math.ceil(this.x);
+        this.y = Math.ceil(this.y);
+
+    },
+
+    /**
+    * Runs Math.ceil() on the x, y, width and height values of this Rectangle.
+    * @method Phaser.Rectangle#ceilAll
+    */
+    ceilAll: function () {
+
+        this.x = Math.ceil(this.x);
+        this.y = Math.ceil(this.y);
+        this.width = Math.ceil(this.width);
+        this.height = Math.ceil(this.height);
 
     },
 
@@ -17737,6 +17699,14 @@ Phaser.State.prototype = {
     },
 
     /**
+    * The preRender method is called after all Game Objects have been updated, but before any rendering takes place.
+    *
+    * @method Phaser.State#preRender
+    */
+    preRender: function () {
+    },
+
+    /**
     * Nearly all display objects in Phaser render automatically, you don't need to tell them to render.
     * However the render method is called AFTER the game renderer and plugins have rendered, so you're able to do any
     * final post-processing style effects here. Note that this happens before plugins postRender takes place.
@@ -17760,6 +17730,14 @@ Phaser.State.prototype = {
     * @method Phaser.State#paused
     */
     paused: function () {
+    },
+
+    /**
+    * This method will be called when the core game loop resumes from a paused state.
+    *
+    * @method Phaser.State#resumed
+    */
+    resumed: function () {
     },
 
     /**
@@ -18398,9 +18376,12 @@ Phaser.StateManager.prototype = {
     */
     update: function () {
 
-        if (this._created && this.onUpdateCallback)
+        if (this._created)
         {
-            this.onUpdateCallback.call(this.callbackContext, this.game);
+            if (this.onUpdateCallback)
+            {
+                this.onUpdateCallback.call(this.callbackContext, this.game);
+            }
         }
         else
         {
@@ -18418,9 +18399,12 @@ Phaser.StateManager.prototype = {
     */
     pauseUpdate: function () {
 
-        if (this._created && this.onPauseUpdateCallback)
+        if (this._created)
         {
-            this.onPauseUpdateCallback.call(this.callbackContext, this.game);
+            if (this.onPauseUpdateCallback)
+            {
+                this.onPauseUpdateCallback.call(this.callbackContext, this.game);
+            }
         }
         else
         {
@@ -18439,7 +18423,7 @@ Phaser.StateManager.prototype = {
     */
     preRender: function (elapsedTime) {
 
-        if (this.onPreRenderCallback)
+        if (this._created && this.onPreRenderCallback)
         {
             this.onPreRenderCallback.call(this.callbackContext, this.game, elapsedTime);
         }
@@ -18465,18 +18449,21 @@ Phaser.StateManager.prototype = {
     */
     render: function () {
 
-        if (this._created && this.onRenderCallback)
+        if (this._created)
         {
-            if (this.game.renderType === Phaser.CANVAS)
+            if (this.onRenderCallback)
             {
-                this.game.context.save();
-                this.game.context.setTransform(1, 0, 0, 1, 0, 0);
-                this.onRenderCallback.call(this.callbackContext, this.game);
-                this.game.context.restore();
-            }
-            else
-            {
-                this.onRenderCallback.call(this.callbackContext, this.game);
+                if (this.game.renderType === Phaser.CANVAS)
+                {
+                    this.game.context.save();
+                    this.game.context.setTransform(1, 0, 0, 1, 0, 0);
+                    this.onRenderCallback.call(this.callbackContext, this.game);
+                    this.game.context.restore();
+                }
+                else
+                {
+                    this.onRenderCallback.call(this.callbackContext, this.game);
+                }
             }
         }
         else
@@ -18525,6 +18512,21 @@ Phaser.StateManager.prototype = {
 Phaser.StateManager.prototype.constructor = Phaser.StateManager;
 
 /**
+* @name Phaser.StateManager#created
+* @property {boolean} created - True if the current state has had its `create` method run (if it has one, if not this is true by default).
+* @readOnly
+*/
+Object.defineProperty(Phaser.StateManager.prototype, "created", {
+
+    get: function () {
+
+        return this._created;
+
+    }
+
+});
+
+/**
 * @author       Miller Medeiros http://millermedeiros.github.com/js-signals/
 * @author       Richard Davey <rich@photonstorm.com>
 * @copyright    2015 Photon Storm Ltd.
@@ -18532,7 +18534,7 @@ Phaser.StateManager.prototype.constructor = Phaser.StateManager;
 */
 
 /**
-* A Signal is an event dispatch mechansim than supports broadcasting to multiple listeners.
+* A Signal is an event dispatch mechansim that supports broadcasting to multiple listeners.
 *
 * Event listeners are uniquely identified by the listener/callback function and the context.
 * 
@@ -18573,7 +18575,7 @@ Phaser.Signal.prototype = {
     _shouldPropagate: true,
 
     /**
-    * Is the Signal active? Only active signal will broadcast dispatched events.
+    * Is the Signal active? Only active signals will broadcast dispatched events.
     *
     * Setting this property during a dispatch will only affect the next dispatch. To stop the propagation of a signal from a listener use {@link #halt}.
     *
@@ -18828,7 +18830,7 @@ Phaser.Signal.prototype = {
     /**
     * Stop propagation of the event, blocking the dispatch to next listener on the queue.
     *
-    * This should be called only during event dispatch as calling it before/after dispatch won't affect other broadcast.
+    * This should be called only during event dispatch as calling it before/after dispatch won't affect another broadcast.
     * See {@link #active} to enable/disable the signal entirely.
     *
     * @method Phaser.Signal#halt
@@ -20285,6 +20287,24 @@ Phaser.Group = function (game, parent, name, addToStage, enableBody, physicsBody
     this.physicsBodyType = physicsBodyType;
 
     /**
+    * If this Group contains Arcade Physics Sprites you can set a custom sort direction via this property.
+    * 
+    * It should be set to one of the Phaser.Physics.Arcade sort direction constants: 
+    * 
+    * Phaser.Physics.Arcade.SORT_NONE
+    * Phaser.Physics.Arcade.LEFT_RIGHT
+    * Phaser.Physics.Arcade.RIGHT_LEFT
+    * Phaser.Physics.Arcade.TOP_BOTTOM
+    * Phaser.Physics.Arcade.BOTTOM_TOP
+    *
+    * If set to `null` the Group will use whatever Phaser.Physics.Arcade.sortDirection is set to. This is the default behavior.
+    * 
+    * @property {integer} physicsSortDirection
+    * @default
+    */
+    this.physicsSortDirection = null;
+
+    /**
     * This signal is dispatched when the group is destroyed.
     * @property {Phaser.Signal} onDestroy
     */
@@ -20314,11 +20334,17 @@ Phaser.Group = function (game, parent, name, addToStage, enableBody, physicsBody
     this.cameraOffset = new Phaser.Point();
 
     /**
-    * An internal array used by physics for fast non z-index destructive sorting.
-    * @property {array} _hash
-    * @private
+    * The hash array is an array belonging to this Group into which you can add any of its children via Group.addToHash and Group.removeFromHash.
+    * 
+    * Only children of this Group can be added to and removed from the hash.
+    * 
+    * This hash is used automatically by Phaser Arcade Physics in order to perform non z-index based destructive sorting.
+    * However if you don't use Arcade Physics, or this isn't a physics enabled Group, then you can use the hash to perform your own
+    * sorting and filtering of Group children without touching their z-index (and therefore display draw order)
+    * 
+    * @property {array} hash
     */
-    this._hash = [];
+    this.hash = [];
 
     /**
     * The property on which children are sorted.
@@ -20385,16 +20411,14 @@ Phaser.Group.prototype.add = function (child, silent) {
 
     if (child.parent !== this)
     {
+        this.addChild(child);
+
+        child.z = this.children.length;
+
         if (this.enableBody)
         {
             this.game.physics.enable(child, this.physicsBodyType);
         }
-
-        this.addChild(child);
-
-        this._hash.push(child);
-
-        child.z = this.children.length;
 
         if (!silent && child.events)
         {
@@ -20408,6 +20432,56 @@ Phaser.Group.prototype.add = function (child, silent) {
     }
 
     return child;
+
+};
+
+/**
+* Adds a child of this Group into the hash array.
+* This call will return false if the child is not a child of this Group, or is already in the hash.
+*
+* @method Phaser.Group#addToHash
+* @param {DisplayObject} child - The display object to add to this Groups hash. Must be a member of this Group already and not present in the hash.
+* @return {boolean} True if the child was successfully added to the hash, otherwise false.
+*/
+Phaser.Group.prototype.addToHash = function (child) {
+
+    if (child.parent === this)
+    {
+        var index = this.hash.indexOf(child);
+
+        if (index === -1)
+        {
+            this.hash.push(child);
+            return true;
+        }
+    }
+
+    return false;
+
+};
+
+/**
+* Removes a child of this Group from the hash array.
+* This call will return false if the child is not in the hash.
+*
+* @method Phaser.Group#removeFromHash
+* @param {DisplayObject} child - The display object to remove from this Groups hash. Must be a member of this Group and in the hash.
+* @return {boolean} True if the child was successfully removed from the hash, otherwise false.
+*/
+Phaser.Group.prototype.removeFromHash = function (child) {
+
+    if (child)
+    {
+        var index = this.hash.indexOf(child);
+
+        if (index !== -1)
+        {
+            this.hash.splice(index, 1);
+            return true;
+        }
+    }
+
+    return false;
 
 };
 
@@ -20454,16 +20528,14 @@ Phaser.Group.prototype.addAt = function (child, index, silent) {
 
     if (child.parent !== this)
     {
+        this.addChildAt(child, index);
+
+        this.updateZ();
+
         if (this.enableBody)
         {
             this.game.physics.enable(child, this.physicsBodyType);
         }
-
-        this.addChildAt(child, index);
-
-        this._hash.push(child);
-
-        this.updateZ();
 
         if (!silent && child.events)
         {
@@ -20519,20 +20591,18 @@ Phaser.Group.prototype.create = function (x, y, key, frame, exists) {
 
     var child = new this.classType(this.game, x, y, key, frame);
 
-    if (this.enableBody)
-    {
-        this.game.physics.enable(child, this.physicsBodyType, this.enableBodyDebug);
-    }
-
     child.exists = exists;
     child.visible = exists;
     child.alive = exists;
 
     this.addChild(child);
 
-    this._hash.push(child);
-
     child.z = this.children.length;
+
+    if (this.enableBody)
+    {
+        this.game.physics.enable(child, this.physicsBodyType, this.enableBodyDebug);
+    }
 
     if (child.events)
     {
@@ -21958,12 +22028,7 @@ Phaser.Group.prototype.remove = function (child, destroy, silent) {
 
     var removed = this.removeChild(child);
 
-    var index = this._hash.indexOf(removed);
-
-    if (index !== -1)
-    {
-        this._hash.splice(index, 1);
-    }
+    this.removeFromHash(child);
 
     this.updateZ();
 
@@ -22007,12 +22072,7 @@ Phaser.Group.prototype.removeAll = function (destroy, silent) {
 
         var removed = this.removeChild(this.children[0]);
 
-        var index = this._hash.indexOf(removed);
-
-        if (index !== -1)
-        {
-            this._hash.splice(index, 1);
-        }
+        this.removeFromHash(removed);
 
         if (destroy && removed)
         {
@@ -22021,7 +22081,7 @@ Phaser.Group.prototype.removeAll = function (destroy, silent) {
     }
     while (this.children.length > 0);
 
-    this._hash = [];
+    this.hash = [];
 
     this.cursor = null;
 
@@ -22063,12 +22123,7 @@ Phaser.Group.prototype.removeBetween = function (startIndex, endIndex, destroy, 
 
         var removed = this.removeChild(this.children[i]);
 
-        var index = this._hash.indexOf(removed);
-
-        if (index !== -1)
-        {
-            this._hash.splice(index, 1);
-        }
+        this.removeFromHash(removed);
 
         if (destroy && removed)
         {
@@ -26667,19 +26722,12 @@ Phaser.Input = function (game) {
     this.hitContext = null;
 
     /**
-    * @property {array} moveCallbacks - An array of callbacks that will be fired every time the activePointer receives a move event from the DOM.
+    * An array of callbacks that will be fired every time the activePointer receives a move event from the DOM.
+    * To add a callback to this array please use `Input.addMoveCallback`.
+    * @property {array} moveCallbacks
+    * @protected
     */
     this.moveCallbacks = [];
-
-    /**
-    * @property {function} moveCallback - An optional callback that will be fired every time the activePointer receives a move event from the DOM. Set to null to disable.
-    */
-    this.moveCallback = null;
-
-    /**
-    * @property {object} moveCallbackContext - The context in which the moveCallback will be sent. Defaults to Phaser.Input but can be set to any valid JS object.
-    */
-    this.moveCallbackContext = this;
 
     /**
     * @property {number} pollRate - How often should the input pointers be checked for updates? A value of 0 means every single frame (60fps); a value of 1 means every other frame (30fps) and so on.
@@ -27080,33 +27128,40 @@ Phaser.Input.prototype = {
     * Adds a callback that is fired every time the activePointer receives a DOM move event such as a mousemove or touchmove.
     *
     * The callback will be sent 4 parameters: The Pointer that moved, the x position of the pointer, the y position and the down state.
-
+    * 
     * It will be called every time the activePointer moves, which in a multi-touch game can be a lot of times, so this is best
     * to only use if you've limited input to a single pointer (i.e. mouse or touch).
+    * 
     * The callback is added to the Phaser.Input.moveCallbacks array and should be removed with Phaser.Input.deleteMoveCallback.
     * 
     * @method Phaser.Input#addMoveCallback
     * @param {function} callback - The callback that will be called each time the activePointer receives a DOM move event.
     * @param {object} context - The context in which the callback will be called.
-    * @return {number} The index of the callback entry. Use this index when calling Input.deleteMoveCallback.
     */
     addMoveCallback: function (callback, context) {
 
-        return this.moveCallbacks.push({ callback: callback, context: context }) - 1;
+        this.moveCallbacks.push({ callback: callback, context: context });
 
     },
 
     /**
-    * Removes the callback at the defined index from the Phaser.Input.moveCallbacks array
+    * Removes the callback from the Phaser.Input.moveCallbacks array.
     * 
     * @method Phaser.Input#deleteMoveCallback
-    * @param {number} index - The index of the callback to remove.
+    * @param {function} callback - The callback to be removed.
+    * @param {object} context - The context in which the callback exists.
     */
-    deleteMoveCallback: function (index) {
+    deleteMoveCallback: function (callback, context) {
 
-        if (this.moveCallbacks[index])
+        var i = this.moveCallbacks.length;
+
+        while (i--)
         {
-            this.moveCallbacks.splice(index, 1);
+            if (this.moveCallbacks[i].callback === callback && this.moveCallbacks[i].context === context)
+            {
+                this.moveCallbacks.splice(i, 1);
+                return;
+            }
         }
 
     },
@@ -27123,7 +27178,7 @@ Phaser.Input.prototype = {
 
         if (this.pointers.length >= Phaser.Input.MAX_POINTERS)
         {
-            console.warn("Phaser.Input.addPointer: only " + Phaser.Input.MAX_POINTERS + " pointer allowed");
+            console.warn("Phaser.Input.addPointer: Maximum limit of " + Phaser.Input.MAX_POINTERS + " pointers reached.");
             return null;
         }
 
@@ -29371,7 +29426,7 @@ Phaser.Pointer.prototype = {
     *
     * A click trampoline is a callback that is run on the DOM 'click' event; this is primarily
     * needed with certain browsers (ie. IE11) which restrict some actions like requestFullscreen
-    * to the DOM 'click' event and reject it for 'pointer*' and 'mouse*' events.
+    * to the DOM 'click' event and rejects it for 'pointer*' and 'mouse*' events.
     *
     * This is used internally by the ScaleManager; click trampoline usage is uncommon.
     * Click trampolines can only be added to pointers that are currently down.
@@ -29412,13 +29467,14 @@ Phaser.Pointer.prototype = {
     },
 
     /**
-    * Fire all click trampolines for which the pointers are still refering to the registered object.
+    * Fire all click trampolines for which the pointers are still referring to the registered object.
     * @method Phaser.Pointer#processClickTrampolines
     * @private
     */
     processClickTrampolines: function () {
 
         var trampolines = this._clickTrampolines;
+
         if (!trampolines)
         {
             return;
@@ -29563,6 +29619,15 @@ Phaser.Touch = function (game) {
     * @default
     */
     this.enabled = true;
+
+    /**
+    * An array of callbacks that will be fired every time a native touch start event is received from the browser.
+    * This is used internally to handle audio and video unlocking on mobile devices.
+    * To add a callback to this array please use `Touch.addTouchLockCallback`.
+    * @property {array} touchLockCallbacks
+    * @protected
+    */
+    this.touchLockCallbacks = [];
 
     /**
     * @property {object} callbackContext - The context under which callbacks are called.
@@ -29726,22 +29791,76 @@ Phaser.Touch.prototype = {
     },
 
     /**
+    * Adds a callback that is fired when a browser touchstart event is received.
+    *
+    * This is used internally to handle audio and video unlocking on mobile devices.
+    *
+    * If the callback returns 'true' then the callback is automatically deleted once invoked.
+    *
+    * The callback is added to the Phaser.Touch.touchLockCallbacks array and should be removed with Phaser.Touch.removeTouchLockCallback.
+    * 
+    * @method Phaser.Touch#addTouchLockCallback
+    * @param {function} callback - The callback that will be called when a touchstart event is received.
+    * @param {object} context - The context in which the callback will be called.
+    */
+    addTouchLockCallback: function (callback, context) {
+
+        this.touchLockCallbacks.push({ callback: callback, context: context });
+
+    },
+
+    /**
+    * Removes the callback at the defined index from the Phaser.Touch.touchLockCallbacks array
+    * 
+    * @method Phaser.Touch#removeTouchLockCallback
+    * @param {function} callback - The callback to be removed.
+    * @param {object} context - The context in which the callback exists.
+    * @return {boolean} True if the callback was deleted, otherwise false.
+    */
+    removeTouchLockCallback: function (callback, context) {
+
+        var i = this.touchLockCallbacks.length;
+
+        while (i--)
+        {
+            if (this.touchLockCallbacks[i].callback === callback && this.touchLockCallbacks[i].context === context)
+            {
+                this.touchLockCallbacks.splice(i, 1);
+                return true;
+            }
+        }
+
+        return false;
+
+    },
+
+    /**
     * The internal method that handles the touchstart event from the browser.
     * @method Phaser.Touch#onTouchStart
     * @param {TouchEvent} event - The native event from the browser. This gets stored in Touch.event.
     */
     onTouchStart: function (event) {
 
-        this.event = event;
+        var i = this.touchLockCallbacks.length;
 
-        if (this.touchStartCallback)
+        while (i--)
         {
-            this.touchStartCallback.call(this.callbackContext, event);
+            if (this.touchLockCallbacks[i].callback.call(this.touchLockCallbacks[i].context, this, event))
+            {
+                this.touchLockCallbacks.splice(i, 1);
+            }
         }
+
+        this.event = event;
 
         if (!this.game.input.enabled || !this.enabled)
         {
             return;
+        }
+
+        if (this.touchStartCallback)
+        {
+            this.touchStartCallback.call(this.callbackContext, event);
         }
 
         if (this.preventDefault)
@@ -29931,6 +30050,7 @@ Object.defineProperty(Phaser.Touch.prototype, "disabled", {
     get: function () {
         return !this.enabled;
     },
+
     set: function (value) {
         this.enabled = !value;
     }
@@ -31341,7 +31461,7 @@ Phaser.InputHandler.prototype = {
     * @param {boolean} [onDrag=true] - If true the sprite will snap to the grid while being dragged.
     * @param {boolean} [onRelease=false] - If true the sprite will snap to the grid when released.
     * @param {number} [snapOffsetX=0] - Used to offset the top-left starting point of the snap grid.
-    * @param {number} [snapOffsetX=0] - Used to offset the top-left starting point of the snap grid.
+    * @param {number} [snapOffsetY=0] - Used to offset the top-left starting point of the snap grid.
     */
     enableSnap: function (snapX, snapY, onDrag, onRelease, snapOffsetX, snapOffsetY) {
 
@@ -34659,7 +34779,7 @@ Phaser.Component.Core.prototype = {
     */
     postUpdate: function() {
 
-        if (this.key instanceof Phaser.BitmapData)
+        if (this.key instanceof Phaser.BitmapData || this.key instanceof Phaser.Video)
         {
             this.key.render();
         }
@@ -34972,6 +35092,11 @@ Phaser.Component.Destroy.prototype = {
         if (this._frame)
         {
             this._frame = null;
+        }
+
+        if (Phaser.Video && this.key instanceof Phaser.Video)
+        {
+            this.key.onChangeSource.remove(this.resizeFrame, this);
         }
 
         this.alive = false;
@@ -35730,7 +35855,7 @@ Phaser.Component.LoadTexture.prototype = {
     * Calling this method causes a WebGL texture update, so use sparingly or in low-intensity portions of your game, or if you know the new texture is already on the GPU.
     *
     * @method
-    * @param {string|Phaser.RenderTexture|Phaser.BitmapData|PIXI.Texture} key - This is the image or texture used by the Sprite during rendering. It can be a string which is a reference to the Cache entry, or an instance of a RenderTexture, BitmapData or PIXI.Texture.
+    * @param {string|Phaser.RenderTexture|Phaser.BitmapData|PIXI.Texture} key - This is the image or texture used by the Sprite during rendering. It can be a string which is a reference to the Cache Image entry, or an instance of a RenderTexture, BitmapData or PIXI.Texture.
     * @param {string|number} [frame] - If this Sprite is using part of a sprite sheet or texture atlas you can specify the exact frame to use by giving a string or numeric index.
     * @param {boolean} [stopAnimation=true] - If an animation is already playing on this Sprite you can choose to stop it or let it carry on playing.
     */
@@ -35765,6 +35890,13 @@ Phaser.Component.LoadTexture.prototype = {
                 setFrame = !this.animations.loadFrameData(this.game.cache.getFrameData(key.key, Phaser.Cache.BITMAPDATA), frame);
             }
         }
+        else if (Phaser.Video && key instanceof Phaser.Video)
+        {
+            //  This works from a reference, which probably isn't what we need here
+            this.setTexture(key.texture);
+            this.setFrame(key.texture.frame.clone());
+            key.onChangeSource.add(this.resizeFrame, this);
+        }
         else if (key instanceof PIXI.Texture)
         {
             this.setTexture(key);
@@ -35790,11 +35922,6 @@ Phaser.Component.LoadTexture.prototype = {
             }
         }
         
-        if (!isRenderTexture)
-        {
-            this.texture.baseTexture.dirty();
-        }
-
         if (setFrame)
         {
             this._frame = Phaser.Rectangle.clone(this.texture.frame);
@@ -35864,6 +35991,29 @@ Phaser.Component.LoadTexture.prototype = {
         }
 
         this.texture._updateUvs();
+
+        if (this.tilingTexture)
+        {
+            this.refreshTexture = true;
+        }
+
+    },
+
+    /**
+    * Resizes the Frame dimensions that the Game Object uses for rendering.
+    * 
+    * You shouldn't normally need to ever call this, but in the case of special texture types such as Video or BitmapData
+    * it can be useful to adjust the dimensions directly in this way.
+    *
+    * @method
+    * @param {object} parent - The parent texture object that caused the resize, i.e. a Phaser.Video object.
+    * @param {integer} width - The new width of the texture.
+    * @param {integer} height - The new height of the texture.
+    */
+    resizeFrame: function (parent, width, height) {
+
+        this.texture.frame.resize(width, height);
+        this.texture.setFrame(this.texture.frame);
 
     },
 
@@ -36809,6 +36959,24 @@ Phaser.GameObjectFactory.prototype = {
     },
 
     /**
+    * Create a Video object.
+    *
+    * This will return a Phaser.Video object which you can pass to a Sprite to be used as a texture.
+    *
+    * @method Phaser.GameObjectFactory#video
+    * @param {string|null} key - The key of the video file in the Phaser.Cache that the Video object will use. If null a `getUserMedia` video stream will be established instead.
+    * @param {boolean} [captureAudio=false] - If the key is null this controls if audio should be captured along with video in the video stream.
+    * @param {integer} [width] - If the key is null this width is used to create the video stream. If not provided the video width will be set to the width of the webcam input source.
+    * @param {integer} [height] - If the key is null this height is used to create the video stream. If not provided the video height will be set to the height of the webcam input source.
+    * @return {Phaser.Video} The newly created Video object.
+    */
+    video: function (key, captureAudio, width, height) {
+
+        return new Phaser.Video(this.game, key, captureAudio, width, height);
+
+    },
+
+    /**
     * Create a BitmapData object.
     *
     * A BitmapData object can be manipulated and drawn to like a traditional Canvas object and used to texture Sprites.
@@ -37315,6 +37483,8 @@ Phaser.GameObjectCreator.prototype.constructor = Phaser.GameObjectCreator;
 * @extends Phaser.Component.Delta
 * @extends Phaser.Component.Destroy
 * @extends Phaser.Component.FixedToCamera
+* @extends Phaser.Component.Health
+* @extends Phaser.Component.InCamera
 * @extends Phaser.Component.InputEnabled
 * @extends Phaser.Component.InWorld
 * @extends Phaser.Component.LifeSpan
@@ -37368,6 +37538,8 @@ Phaser.Component.Core.install.call(Phaser.Sprite.prototype, [
     'Delta',
     'Destroy',
     'FixedToCamera',
+    'Health',
+    'InCamera',
     'InputEnabled',
     'InWorld',
     'LifeSpan',
@@ -37513,10 +37685,14 @@ Phaser.Image.prototype.preUpdate = function() {
 * @extends Phaser.Component.Animation
 * @extends Phaser.Component.AutoCull
 * @extends Phaser.Component.Bounds
+* @extends Phaser.Component.BringToTop
 * @extends Phaser.Component.Destroy
 * @extends Phaser.Component.FixedToCamera
+* @extends Phaser.Component.Health
+* @extends Phaser.Component.InCamera
 * @extends Phaser.Component.InputEnabled
 * @extends Phaser.Component.InWorld
+* @extends Phaser.Component.LifeSpan
 * @extends Phaser.Component.LoadTexture
 * @extends Phaser.Component.Overlap
 * @extends Phaser.Component.PhysicsBody
@@ -37546,6 +37722,12 @@ Phaser.TileSprite = function (game, x, y, width, height, key, frame) {
     this.type = Phaser.TILESPRITE;
 
     /**
+    * @property {number} physicsType - The const physics body type of this object.
+    * @readonly
+    */
+    this.physicsType = Phaser.SPRITE;
+
+    /**
     * @property {Phaser.Point} _scroll - Internal cache var.
     * @private
     */
@@ -37565,10 +37747,14 @@ Phaser.Component.Core.install.call(Phaser.TileSprite.prototype, [
     'Animation',
     'AutoCull',
     'Bounds',
+    'BringToTop',
     'Destroy',
     'FixedToCamera',
+    'Health',
+    'InCamera',
     'InputEnabled',
     'InWorld',
+    'LifeSpan',
     'LoadTexture',
     'Overlap',
     'PhysicsBody',
@@ -38164,7 +38350,7 @@ Phaser.Button.prototype.setStateFrame = function (state, frame, switchImmediatel
 {
     var frameKey = '_on' + state + 'Frame';
 
-    if (frame != null) // not null or undefined
+    if (frame !== null) // not null or undefined
     {
         this[frameKey] = frame;
 
@@ -38713,14 +38899,14 @@ Phaser.Particle.prototype.reset = function(x, y, health) {
 * @class Phaser.BitmapData
 * @constructor
 * @param {Phaser.Game} game - A reference to the currently running game.
-* @param {string} key - Internal Phaser reference key for the render texture.
-* @param {number} [width=256] - The width of the BitmapData in pixels.
-* @param {number} [height=256] - The height of the BitmapData in pixels.
+* @param {string} key - Internal Phaser reference key for the BitmapData.
+* @param {number} [width=256] - The width of the BitmapData in pixels. If undefined or zero it's set to a default value.
+* @param {number} [height=256] - The height of the BitmapData in pixels. If undefined or zero it's set to a default value.
 */
 Phaser.BitmapData = function (game, key, width, height) {
 
-    if (typeof width === 'undefined') { width = 256; }
-    if (typeof height === 'undefined') { height = 256; }
+    if (typeof width === 'undefined' || width === 0) { width = 256; }
+    if (typeof height === 'undefined' || height === 0) { height = 256; }
 
     /**
     * @property {Phaser.Game} game - A reference to the currently running game.
@@ -38765,9 +38951,16 @@ Phaser.BitmapData = function (game, key, width, height) {
     this.imageData = this.context.getImageData(0, 0, width, height);
 
     /**
-    * @property {Uint8ClampedArray} data - A Uint8ClampedArray view into BitmapData.buffer.
+    * A Uint8ClampedArray view into BitmapData.buffer.
+    * Note that this is unavailable in some browsers (such as Epic Browser due to its security restrictions)
+    * @property {Uint8ClampedArray} data
     */
-    this.data = this.imageData.data;
+    this.data = null;
+
+    if (this.imageData)
+    {
+        this.data = this.imageData.data;
+    }
 
     /**
     * @property {Uint32Array} pixels - An Uint32Array view into BitmapData.buffer.
@@ -38777,21 +38970,24 @@ Phaser.BitmapData = function (game, key, width, height) {
     /**
     * @property {ArrayBuffer} buffer - An ArrayBuffer the same size as the context ImageData.
     */
-    if (this.imageData.data.buffer)
+    if (this.data)
     {
-        this.buffer = this.imageData.data.buffer;
-        this.pixels = new Uint32Array(this.buffer);
-    }
-    else
-    {
-        if (window['ArrayBuffer'])
+        if (this.imageData.data.buffer)
         {
-            this.buffer = new ArrayBuffer(this.imageData.data.length);
+            this.buffer = this.imageData.data.buffer;
             this.pixels = new Uint32Array(this.buffer);
         }
         else
         {
-            this.pixels = this.imageData.data;
+            if (window['ArrayBuffer'])
+            {
+                this.buffer = new ArrayBuffer(this.imageData.data.length);
+                this.pixels = new Uint32Array(this.buffer);
+            }
+            else
+            {
+                this.pixels = this.imageData.data;
+            }
         }
     }
 
@@ -38811,7 +39007,7 @@ Phaser.BitmapData = function (game, key, width, height) {
     * @property {Phaser.Frame} textureFrame - The Frame this BitmapData uses for rendering.
     * @default
     */
-    this.textureFrame = new Phaser.Frame(0, 0, 0, width, height, 'bitmapData', game.rnd.uuid());
+    this.textureFrame = new Phaser.Frame(0, 0, 0, width, height, 'bitmapData');
 
     this.texture.frame = this.textureFrame;
 
@@ -39520,7 +39716,7 @@ Phaser.BitmapData.prototype = {
 
     /**
     * Scans the BitmapData, pixel by pixel, until it encounters a pixel that isn't transparent (i.e. has an alpha value > 0).
-    * It then stops scanning and returns an object containing the colour of the pixel in r, g and b properties and the location in the x and y properties.
+    * It then stops scanning and returns an object containing the color of the pixel in r, g and b properties and the location in the x and y properties.
     * 
     * The direction parameter controls from which direction it should start the scan:
     * 
@@ -39531,7 +39727,7 @@ Phaser.BitmapData.prototype = {
     *
     * @method Phaser.BitmapData#getFirstPixel
     * @param {number} [direction=0] - The direction in which to scan for the first pixel. 0 = top to bottom, 1 = bottom to top, 2 = left to right and 3 = right to left.
-    * @return {object} Returns an object containing the colour of the pixel in the `r`, `g` and `b` properties and the location in the `x` and `y` properties.
+    * @return {object} Returns an object containing the color of the pixel in the `r`, `g` and `b` properties and the location in the `x` and `y` properties.
     */
     getFirstPixel: function (direction) {
 
@@ -39603,7 +39799,7 @@ Phaser.BitmapData.prototype = {
 
     /**
     * Scans the BitmapData and calculates the bounds. This is a rectangle that defines the extent of all non-transparent pixels.
-    * The rectangle returned will extend from the top-left of the image to the bottom-right, exluding transparent pixels.
+    * The rectangle returned will extend from the top-left of the image to the bottom-right, excluding transparent pixels.
     *
     * @method Phaser.BitmapData#getBounds
     * @param {Phaser.Rectangle} [rect] - If provided this Rectangle object will be populated with the bounds, otherwise a new object will be created.
@@ -39680,7 +39876,7 @@ Phaser.BitmapData.prototype = {
      * @param {number} [scaleX=1] - The horizontal scale factor of the block. A value of 1 means no scaling. 2 would be twice the size, and so on.
      * @param {number} [scaleY=1] - The vertical scale factor of the block. A value of 1 means no scaling. 2 would be twice the size, and so on.
      * @param {number} [alpha=1] - The alpha that will be set on the context before drawing. A value between 0 (fully transparent) and 1, opaque.
-     * @param {number} [blendMode=null] - The composite blend mode that will be used when drawing. The default is no blend mode at all.
+     * @param {string} [blendMode=null] - The composite blend mode that will be used when drawing. The default is no blend mode at all. This is a Canvas globalCompositeOperation value such as 'lighter' or 'xor'.
      * @param {boolean} [roundPx=false] - Should the x and y values be rounded to integers before drawing? This prevents anti-aliasing in some instances.
      * @return {Phaser.BitmapData} This BitmapData object for method chaining.
      */
@@ -39860,7 +40056,7 @@ Phaser.BitmapData.prototype = {
     * @param {number} x - The destination x coordinate to copy the image to.
     * @param {number} y - The destination y coordinate to copy the image to.
     * @param {number} [alpha=1] - The alpha that will be set on the context before drawing. A value between 0 (fully transparent) and 1, opaque.
-    * @param {number} [blendMode=null] - The composite blend mode that will be used when drawing. The default is no blend mode at all.
+    * @param {string} [blendMode=null] - The composite blend mode that will be used when drawing. The default is no blend mode at all. This is a Canvas globalCompositeOperation value such as 'lighter' or 'xor'.
     * @param {boolean} [roundPx=false] - Should the x and y values be rounded to integers before drawing? This prevents anti-aliasing in some instances.
     * @return {Phaser.BitmapData} This BitmapData object for method chaining.
     */
@@ -39881,7 +40077,7 @@ Phaser.BitmapData.prototype = {
     * @param {number} [y=0] - The y coordinate to translate to before drawing. If not specified it will default to `source.y`.
     * @param {number} [width] - The new width of the Sprite being copied. If not specified it will default to `source.width`.
     * @param {number} [height] - The new height of the Sprite being copied. If not specified it will default to `source.height`.
-    * @param {number} [blendMode=null] - The composite blend mode that will be used when drawing the Sprite. The default is no blend mode at all.
+    * @param {string} [blendMode=null] - The composite blend mode that will be used when drawing. The default is no blend mode at all. This is a Canvas globalCompositeOperation value such as 'lighter' or 'xor'.
     * @param {boolean} [roundPx=false] - Should the x and y values be rounded to integers before drawing? This prevents anti-aliasing in some instances.
     * @return {Phaser.BitmapData} This BitmapData object for method chaining.
     */
@@ -39901,7 +40097,7 @@ Phaser.BitmapData.prototype = {
     *
     * @method Phaser.BitmapData#drawGroup
     * @param {Phaser.Group} group - The Group to draw onto this BitmapData.
-    * @param {number} [blendMode=null] - The composite blend mode that will be used when drawing the Group children. The default is no blend mode at all.
+    * @param {string} [blendMode=null] - The composite blend mode that will be used when drawing. The default is no blend mode at all. This is a Canvas globalCompositeOperation value such as 'lighter' or 'xor'.
     * @param {boolean} [roundPx=false] - Should the x and y values be rounded to integers before drawing? This prevents anti-aliasing in some instances.
     * @return {Phaser.BitmapData} This BitmapData object for method chaining.
     */
@@ -40829,9 +41025,10 @@ Phaser.RenderTexture = function (game, width, height, key, scaleMode, resolution
     this.type = Phaser.RENDERTEXTURE;
 
     /**
-    * @property {PIXI.Matrix} matrix - The matrix that is applied when display objects are rendered to this RenderTexture.
+    * @property {PIXI.Matrix} _tempMatrix - The matrix that is applied when display objects are rendered to this RenderTexture.
+    * @private
     */
-    this.matrix = new PIXI.Matrix();
+    this._tempMatrix = new PIXI.Matrix();
 
     PIXI.RenderTexture.call(this, width, height, this.game.renderer, scaleMode, resolution);
 
@@ -40843,50 +41040,98 @@ Phaser.RenderTexture.prototype = Object.create(PIXI.RenderTexture.prototype);
 Phaser.RenderTexture.prototype.constructor = Phaser.RenderTexture;
 
 /**
-* This function will draw the display object to the texture.
+* This function will draw the display object to the RenderTexture at the given coordinates.
+*
+* When the display object is drawn it takes into account scale and rotation.
+*
+* If you don't want those then use RenderTexture.renderRawXY instead.
 *
 * @method Phaser.RenderTexture.prototype.renderXY
-* @param {Phaser.Sprite|Phaser.Image|Phaser.Text|Phaser.BitmapText|Phaser.Group} displayObject  The display object to render to this texture.
+* @param {Phaser.Sprite|Phaser.Image|Phaser.Text|Phaser.BitmapText|Phaser.Group} displayObject - The display object to render to this texture.
 * @param {number} x - The x position to render the object at.
 * @param {number} y - The y position to render the object at.
-* @param {boolean} clear - If true the texture will be cleared before the display object is drawn.
+* @param {boolean} [clear=false] - If true the texture will be cleared before the display object is drawn.
 */
 Phaser.RenderTexture.prototype.renderXY = function (displayObject, x, y, clear) {
 
-    this.matrix.tx = x;
-    this.matrix.ty = y;
+    displayObject.updateTransform();
+
+    this._tempMatrix.copyFrom(displayObject.worldTransform);
+    this._tempMatrix.tx = x;
+    this._tempMatrix.ty = y;
 
     if (this.renderer.type === PIXI.WEBGL_RENDERER)
     {
-        this.renderWebGL(displayObject, this.matrix, clear);
+        this.renderWebGL(displayObject, this._tempMatrix, clear);
     }
     else
     {
-        this.renderCanvas(displayObject, this.matrix, clear);
+        this.renderCanvas(displayObject, this._tempMatrix, clear);
     }
 
 };
 
 /**
-* This function will draw the display object to the texture.
+* This function will draw the display object to the RenderTexture at the given coordinates.
 *
-* @method Phaser.RenderTexture.prototype.render
-* @param {Phaser.Sprite|Phaser.Image|Phaser.Text|Phaser.BitmapText|Phaser.Group} displayObject  The display object to render to this texture.
-* @param {Phaser.Point} position - A Point object containing the position to render the display object at.
-* @param {boolean} clear - If true the texture will be cleared before the display object is drawn.
+* When the display object is drawn it doesn't take into account scale, rotation or translation.
+*
+* If you need those then use RenderTexture.renderXY instead.
+*
+* @method Phaser.RenderTexture.prototype.renderRawXY
+* @param {Phaser.Sprite|Phaser.Image|Phaser.Text|Phaser.BitmapText|Phaser.Group} displayObject - The display object to render to this texture.
+* @param {number} x - The x position to render the object at.
+* @param {number} y - The y position to render the object at.
+* @param {boolean} [clear=false] - If true the texture will be cleared before the display object is drawn.
 */
-Phaser.RenderTexture.prototype.render = function (displayObject, position, clear) {
+Phaser.RenderTexture.prototype.renderRawXY = function (displayObject, x, y, clear) {
 
-    this.matrix.tx = position.x;
-    this.matrix.ty = position.y;
+    this._tempMatrix.identity().translate(x, y);
 
     if (this.renderer.type === PIXI.WEBGL_RENDERER)
     {
-        this.renderWebGL(displayObject, this.matrix, clear);
+        this.renderWebGL(displayObject, this._tempMatrix, clear);
     }
     else
     {
-        this.renderCanvas(displayObject, this.matrix, clear);
+        this.renderCanvas(displayObject, this._tempMatrix, clear);
+    }
+
+};
+
+/**
+* This function will draw the display object to the RenderTexture.
+*
+* In versions of Phaser prior to 2.4.0 the second parameter was a Phaser.Point object. 
+* This is now a Matrix allowing you much more control over how the Display Object is rendered.
+* If you need to replicate the earlier behavior please use Phaser.RenderTexture.renderXY instead.
+*
+* If you wish for the displayObject to be rendered taking its current scale, rotation and translation into account then either
+* pass `null`, leave it undefined or pass `displayObject.worldTransform` as the matrix value.
+*
+* @method Phaser.RenderTexture.prototype.render
+* @param {Phaser.Sprite|Phaser.Image|Phaser.Text|Phaser.BitmapText|Phaser.Group} displayObject - The display object to render to this texture.
+* @param {Phaser.Matrix} [matrix] - Optional matrix to apply to the display object before rendering. If null or undefined it will use the worldTransform matrix of the given display object.
+* @param {boolean} [clear=false] - If true the texture will be cleared before the display object is drawn.
+*/
+Phaser.RenderTexture.prototype.render = function (displayObject, matrix, clear) {
+
+    if (typeof matrix === 'undefined' || matrix === null)
+    {
+        this._tempMatrix.copyFrom(displayObject.worldTransform);
+    }
+    else
+    {
+        this._tempMatrix.copyFrom(matrix);
+    }
+
+    if (this.renderer.type === PIXI.WEBGL_RENDERER)
+    {
+        this.renderWebGL(displayObject, this._tempMatrix, clear);
+    }
+    else
+    {
+        this.renderCanvas(displayObject, this._tempMatrix, clear);
     }
 
 };
@@ -41091,18 +41336,24 @@ Phaser.Text.prototype.destroy = function (destroyChildren) {
 * @param {number} [y=0] - The shadowOffsetY value in pixels. This is how far offset vertically the shadow effect will be.
 * @param {string} [color='rgba(0,0,0,1)'] - The color of the shadow, as given in CSS rgba or hex format. Set the alpha component to 0 to disable the shadow.
 * @param {number} [blur=0] - The shadowBlur value. Make the shadow softer by applying a Gaussian blur to it. A number from 0 (no blur) up to approx. 10 (depending on scene).
+* @param {boolean} [shadowStroke=true] - Apply the drop shadow to the Text stroke (if set).
+* @param {boolean} [shadowFill=true] - Apply the drop shadow to the Text fill (if set).
 */
-Phaser.Text.prototype.setShadow = function (x, y, color, blur) {
+Phaser.Text.prototype.setShadow = function (x, y, color, blur, shadowStroke, shadowFill) {
 
     if (typeof x === 'undefined') { x = 0; }
     if (typeof y === 'undefined') { y = 0; }
     if (typeof color === 'undefined') { color = 'rgba(0, 0, 0, 1)'; }
     if (typeof blur === 'undefined') { blur = 0; }
+    if (typeof shadowStroke === 'undefined') { shadowStroke = true; }
+    if (typeof shadowFill === 'undefined') { shadowFill = true; }
 
     this.style.shadowOffsetX = x;
     this.style.shadowOffsetY = y;
     this.style.shadowColor = color;
     this.style.shadowBlur = blur;
+    this.style.shadowStroke = shadowStroke;
+    this.style.shadowFill = shadowFill;
     this.dirty = true;
 
 };
@@ -41195,10 +41446,10 @@ Phaser.Text.prototype.updateText = function () {
         outputText = this.runWordWrap(this.text);
     }
 
-    //split text into lines
+    //  Split text into lines
     var lines = outputText.split(/(?:\r\n|\r|\n)/);
 
-    //calculate text width
+    //  Calculate text width
     var lineWidths = [];
     var maxLineWidth = 0;
     var fontProperties = this.determineFontProperties(this.style.font);
@@ -41214,7 +41465,7 @@ Phaser.Text.prototype.updateText = function () {
 
     this.canvas.width = width * this.resolution;
     
-    //calculate text height
+    //  Calculate text height
     var lineHeight = fontProperties.fontSize + this.style.strokeThickness + this.padding.y;
     var height = lineHeight * lines.length;
     var lineSpacing = this._lineSpacing;
@@ -41250,10 +41501,7 @@ Phaser.Text.prototype.updateText = function () {
     this.context.font = this.style.font;
     this.context.strokeStyle = this.style.stroke;
     this.context.textBaseline = 'alphabetic';
-    this.context.shadowOffsetX = this.style.shadowOffsetX;
-    this.context.shadowOffsetY = this.style.shadowOffsetY;
-    this.context.shadowColor = this.style.shadowColor;
-    this.context.shadowBlur = this.style.shadowBlur;
+
     this.context.lineWidth = this.style.strokeThickness;
     this.context.lineCap = 'round';
     this.context.lineJoin = 'round';
@@ -41291,18 +41539,45 @@ Phaser.Text.prototype.updateText = function () {
         {
             if (this.style.stroke && this.style.strokeThickness)
             {
+                this.updateShadow(this.style.shadowStroke);
                 this.context.strokeText(lines[i], linePositionX, linePositionY);
             }
 
             if (this.style.fill)
             {
+                this.updateShadow(this.style.shadowFill);
                 this.context.fillText(lines[i], linePositionX, linePositionY);
             }
         }
-
     }
 
     this.updateTexture();
+
+};
+
+/**
+* Sets the Shadow on the Text.context based on the Style settings, or disables it if not enabled.
+* This is called automatically by Text.updateText.
+*
+* @method Phaser.Text#updateShadow
+* @param {boolean} state - If true the shadow will be set to the Style values, otherwise it will be set to zero.
+*/
+Phaser.Text.prototype.updateShadow = function (state) {
+
+    if (state)
+    {
+        this.context.shadowOffsetX = this.style.shadowOffsetX;
+        this.context.shadowOffsetY = this.style.shadowOffsetY;
+        this.context.shadowColor = this.style.shadowColor;
+        this.context.shadowBlur = this.style.shadowBlur;
+    }
+    else
+    {
+        this.context.shadowOffsetX = 0;
+        this.context.shadowOffsetY = 0;
+        this.context.shadowColor = 0;
+        this.context.shadowBlur = 0;
+    }
 
 };
 
@@ -41326,11 +41601,13 @@ Phaser.Text.prototype.updateLine = function (line, x, y) {
 
         if (this.style.stroke && this.style.strokeThickness)
         {
+            this.updateShadow(this.style.shadowStroke);
             this.context.strokeText(letter, x, y);
         }
 
         if (this.style.fill)
         {
+            this.updateShadow(this.style.shadowFill);
             this.context.fillText(letter, x, y);
         }
 
@@ -41957,6 +42234,50 @@ Object.defineProperty(Phaser.Text.prototype, 'shadowBlur', {
         if (value !== this.style.shadowBlur)
         {
             this.style.shadowBlur = value;
+            this.dirty = true;
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Text#shadowStroke
+* @property {boolean} shadowStroke - Sets if the drop shadow is applied to the Text stroke.
+*/
+Object.defineProperty(Phaser.Text.prototype, 'shadowStroke', {
+
+    get: function() {
+        return this.style.shadowStroke;
+    },
+
+    set: function(value) {
+
+        if (value !== this.style.shadowStroke)
+        {
+            this.style.shadowStroke = value;
+            this.dirty = true;
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Text#shadowFill
+* @property {boolean} shadowFill - Sets if the drop shadow is applied to the Text fill.
+*/
+Object.defineProperty(Phaser.Text.prototype, 'shadowFill', {
+
+    get: function() {
+        return this.style.shadowFill;
+    },
+
+    set: function(value) {
+
+        if (value !== this.style.shadowFill)
+        {
+            this.style.shadowFill = value;
             this.dirty = true;
         }
 
@@ -43253,6 +43574,44 @@ Phaser.Device = function () {
     */
     this.webm = false;
 
+    //  Video
+
+    /**
+    * @property {boolean} oggVideo - Can this device play ogg video files?
+    * @default
+    */
+    this.oggVideo = false;
+
+    /**
+    * @property {boolean} h264Video - Can this device play h264 mp4 video files?
+    * @default
+    */
+    this.h264Video = false;
+
+    /**
+    * @property {boolean} mp4Video - Can this device play h264 mp4 video files?
+    * @default
+    */
+    this.mp4Video = false;
+
+    /**
+    * @property {boolean} webmVideo - Can this device play webm video files?
+    * @default
+    */
+    this.webmVideo = false;
+
+    /**
+    * @property {boolean} vp9Video - Can this device play vp9 video files?
+    * @default
+    */
+    this.vp9Video = false;
+
+    /**
+    * @property {boolean} hlsVideo - Can this device play hls video files?
+    * @default
+    */
+    this.hlsVideo = false;
+
     //  Device
 
     /**
@@ -43771,6 +44130,47 @@ Phaser.Device._initialize = function () {
     }
 
     /**
+    * Check video support.
+    */
+    function _checkVideo () {
+
+        var videoElement = document.createElement("video");
+        var result = false;
+
+        try {
+            if (result = !!videoElement.canPlayType)
+            {
+                if (videoElement.canPlayType('video/ogg; codecs="theora"').replace(/^no$/, ''))
+                {
+                    device.oggVideo = true;
+                }
+
+                if (videoElement.canPlayType('video/mp4; codecs="avc1.42E01E"').replace(/^no$/, ''))
+                {
+                    // Without QuickTime, this value will be `undefined`. github.com/Modernizr/Modernizr/issues/546
+                    device.h264Video = true;
+                    device.mp4Video = true;
+                }
+
+                if (videoElement.canPlayType('video/webm; codecs="vp8, vorbis"').replace(/^no$/, ''))
+                {
+                    device.webmVideo = true;
+                }
+
+                if (videoElement.canPlayType('video/webm; codecs="vp9"').replace(/^no$/, ''))
+                {
+                    device.vp9Video = true;
+                }
+
+                if (videoElement.canPlayType('application/x-mpegURL; codecs="avc1.42E01E"').replace(/^no$/, ''))
+                {
+                    device.hlsVideo = true;
+                }
+            }
+        } catch (e) {}
+    }
+
+    /**
     * Check audio support.
     */
     function _checkAudio () {
@@ -43945,6 +44345,7 @@ Phaser.Device._initialize = function () {
     //  Run the checks
     _checkOS();
     _checkAudio();
+    _checkVideo();
     _checkBrowser();
     _checkCSS3D();
     _checkDevice();
@@ -43964,27 +44365,58 @@ Phaser.Device._initialize = function () {
 */
 Phaser.Device.canPlayAudio = function (type) {
 
-    if (type == 'mp3' && this.mp3)
+    if (type === 'mp3' && this.mp3)
     {
         return true;
     }
-    else if (type == 'ogg' && (this.ogg || this.opus))
+    else if (type === 'ogg' && (this.ogg || this.opus))
     {
         return true;
     }
-    else if (type == 'm4a' && this.m4a)
+    else if (type === 'm4a' && this.m4a)
     {
         return true;
     }
-    else if (type == 'opus' && this.opus)
+    else if (type === 'opus' && this.opus)
     {
         return true;
     }
-    else if (type == 'wav' && this.wav)
+    else if (type === 'wav' && this.wav)
     {
         return true;
     }
-    else if (type == 'webm' && this.webm)
+    else if (type === 'webm' && this.webm)
+    {
+        return true;
+    }
+
+    return false;
+
+};
+
+/**
+* Check whether the host environment can play video files.
+*
+* @method canPlayVideo
+* @memberof Phaser.Device.prototype
+* @param {string} type - One of 'mp4, 'ogg', 'webm' or 'mpeg'.
+* @return {boolean} True if the given file type is supported by the browser, otherwise false.
+*/
+Phaser.Device.canPlayVideo = function (type) {
+
+    if (type === 'webm' && (this.webmVideo || this.vp9Video))
+    {
+        return true;
+    }
+    else if (type === 'mp4' && this.mp4Video)
+    {
+        return true;
+    }
+    else if (type === 'ogg' && this.oggVideo)
+    {
+        return true;
+    }
+    else if (type === 'mpeg' && this.hlsVideo)
     {
         return true;
     }
@@ -47556,6 +47988,11 @@ Phaser.Tween = function (target, game, manager) {
     */
     this._codePaused = false;
 
+    /**
+    * @property {boolean} _hasStarted - Internal var to track if the Tween has started yet or not.
+    * @private
+    */
+    this._hasStarted = false;
 };
 
 Phaser.Tween.prototype = {
@@ -47578,7 +48015,7 @@ Phaser.Tween.prototype = {
     */
     to: function (properties, duration, ease, autoStart, delay, repeat, yoyo) {
 
-        if (typeof duration === 'undefined') { duration = 1000; }
+        if (typeof duration === 'undefined' || duration <= 0) { duration = 1000; }
         if (typeof ease === 'undefined') { ease = Phaser.Easing.Default; }
         if (typeof autoStart === 'undefined') { autoStart = false; }
         if (typeof delay === 'undefined') { delay = 0; }
@@ -47705,8 +48142,6 @@ Phaser.Tween.prototype = {
         this.current = index;
 
         this.timeline[this.current].start();
-
-        this.onStart.dispatch(this.target, this);
 
         return this;
 
@@ -48122,6 +48557,12 @@ Phaser.Tween.prototype = {
         }
         else if (status === Phaser.TweenData.RUNNING)
         {
+            if (!this._hasStarted)
+            {
+                this.onStart.dispatch(this.target, this);
+                this._hasStarted = true;
+            }
+
             if (this._onUpdateCallback !== null)
             {
                 this._onUpdateCallback.call(this._onUpdateCallbackContext, this, this.timeline[this.current].value, this.timeline[this.current]);
@@ -50970,14 +51411,9 @@ Phaser.AnimationManager.prototype = {
         this.currentAnim = this._anims[name];
         this.currentFrame = this.currentAnim.currentFrame;
 
-        // this.sprite.setFrame(this.currentFrame);
-
-        //  CHECK WE STILL NEED THIS - PRETTY SURE IT DOESN'T ACTUALLY DO ANYTHING!
-        if (this.sprite.__tilePattern)
+        if (this.sprite.tilingTexture)
         {
-            // this.__tilePattern = false;
-            this.sprite.__tilePattern = false;
-            this.tilingTexture = false;
+            this.sprite.refreshTexture = true;
         }
 
         return this._anims[name];
@@ -51174,13 +51610,8 @@ Phaser.AnimationManager.prototype = {
     */
     refreshFrame: function () {
 
+        //  TODO
         this.sprite.setTexture(PIXI.TextureCache[this.currentFrame.uuid]);
-
-        if (this.sprite.__tilePattern)
-        {
-            this.__tilePattern = false;
-            this.tilingTexture = false;
-        }
 
     },
 
@@ -51304,12 +51735,6 @@ Object.defineProperty(Phaser.AnimationManager.prototype, 'frame', {
             if (this.currentFrame)
             {
                 this.sprite.setFrame(this.currentFrame);
-
-                if (this.sprite.__tilePattern)
-                {
-                    this.__tilePattern = false;
-                    this.tilingTexture = false;
-                }
             }
         }
 
@@ -51334,7 +51759,7 @@ Object.defineProperty(Phaser.AnimationManager.prototype, 'frameName', {
 
     set: function (value) {
 
-        if (typeof value === 'string' && this._frameData.getFrameByName(value) !== null)
+        if (typeof value === 'string' && this._frameData && this._frameData.getFrameByName(value) !== null)
         {
             this.currentFrame = this._frameData.getFrameByName(value);
 
@@ -51343,12 +51768,6 @@ Object.defineProperty(Phaser.AnimationManager.prototype, 'frameName', {
                 this._frameIndex = this.currentFrame.index;
 
                 this.sprite.setFrame(this.currentFrame);
-
-                if (this.sprite.__tilePattern)
-                {
-                    this.__tilePattern = false;
-                    this.tilingTexture = false;
-                }
             }
         }
         else
@@ -51790,22 +52209,19 @@ Phaser.Animation.prototype = {
             return false;
         }
 
+        var idx = this.currentFrame.index;
+
         this.currentFrame = this._frameData.getFrame(this._frames[this._frameIndex]);
 
-        if (this.currentFrame)
+        if (this.currentFrame && idx !== this.currentFrame.index)
         {
             this._parent.setFrame(this.currentFrame);
-
-            if (this._parent.__tilePattern)
-            {
-                this._parent.__tilePattern = false;
-                this._parent.tilingTexture = false;
-            }
         }
 
         if (this.onUpdate && signalUpdate)
         {
             this.onUpdate.dispatch(this, this.currentFrame);
+
             // False if the animation was destroyed from within a callback
             return !!this._frameData;
         }
@@ -52174,9 +52590,8 @@ Phaser.Animation.generateFrameNames = function (prefix, start, stop, suffix, zer
 * @param {number} width - Width of the frame within the texture image.
 * @param {number} height - Height of the frame within the texture image.
 * @param {string} name - The name of the frame. In Texture Atlas data this is usually set to the filename.
-* @param {string} uuid - Internal UUID key.
 */
-Phaser.Frame = function (index, x, y, width, height, name, uuid) {
+Phaser.Frame = function (index, x, y, width, height, name) {
 
     /**
     * @property {number} index - The index of this Frame within the FrameData set it is being added to.
@@ -52207,11 +52622,6 @@ Phaser.Frame = function (index, x, y, width, height, name, uuid) {
     * @property {string} name - Useful for Texture Atlas files (is set to the filename value).
     */
     this.name = name;
-
-    /**
-    * @property {string} uuid - DEPRECATED: A link to the PIXI.TextureCache entry.
-    */
-    this.uuid = uuid;
 
     /**
     * @property {number} centerX - Center X position within the image to cut from.
@@ -52247,12 +52657,12 @@ Phaser.Frame = function (index, x, y, width, height, name, uuid) {
     this.trimmed = false;
 
     /**
-    * @property {number} sourceSizeW - Width of the original sprite.
+    * @property {number} sourceSizeW - Width of the original sprite before it was trimmed.
     */
     this.sourceSizeW = width;
 
     /**
-    * @property {number} sourceSizeH - Height of the original sprite.
+    * @property {number} sourceSizeH - Height of the original sprite before it was trimmed.
     */
     this.sourceSizeH = height;
 
@@ -52295,6 +52705,27 @@ Phaser.Frame = function (index, x, y, width, height, name, uuid) {
 Phaser.Frame.prototype = {
 
     /**
+    * Adjusts of all the Frame properties based on the given width and height values.
+    *
+    * @method Phaser.Frame#resize
+    * @param {integer} width - The new width of the Frame.
+    * @param {integer} height - The new height of the Frame.
+    */
+    resize: function (width, height) {
+
+        this.width = width;
+        this.height = height;
+        this.centerX = Math.floor(width / 2);
+        this.centerY = Math.floor(height / 2);
+        this.distance = Phaser.Math.distance(0, 0, width, height);
+        this.sourceSizeW = width;
+        this.sourceSizeH = height;
+        this.right = this.x + width;
+        this.bottom = this.y + height;
+
+    },
+
+    /**
     * If the frame was trimmed when added to the Texture Atlas this records the trim and source data.
     *
     * @method Phaser.Frame#setTrim
@@ -52333,7 +52764,7 @@ Phaser.Frame.prototype = {
      */
     clone: function () {
 
-        var output = new Phaser.Frame(this.index, this.x, this.y, this.width, this.height, this.name, this.uuid);
+        var output = new Phaser.Frame(this.index, this.x, this.y, this.width, this.height, this.name);
 
         for (var prop in this)
         {
@@ -52557,7 +52988,7 @@ Phaser.FrameData.prototype = {
         else
         {
             //  Input array given, loop through that instead
-            for (var i = 0, len = frames.length; i < len; i++)
+            for (var i = 0; i < frames.length; i++)
             {
                 //  Does the input array contain names or indexes?
                 if (useNumericIndex)
@@ -52595,7 +53026,7 @@ Phaser.FrameData.prototype = {
         if (typeof frames === "undefined" || frames.length === 0)
         {
             //  No frames array, so we loop through all frames
-            for (var i = 0, len = this._frames.length; i < len; i++)
+            for (var i = 0; i < this._frames.length; i++)
             {
                 output.push(this._frames[i].index);
             }
@@ -52603,7 +53034,7 @@ Phaser.FrameData.prototype = {
         else
         {
             //  Input array given, loop through that instead
-            for (var i = 0, len = frames.length; i < len; i++)
+            for (var i = 0; i < this._frames.length; i++)
             {
                 //  Does the frames array contain names or indexes?
                 if (useNumericIndex)
@@ -52714,17 +53145,7 @@ Phaser.AnimationParser = {
 
         for (var i = 0; i < total; i++)
         {
-            var uuid = game.rnd.uuid();
-
-            //  uuid needed?
-            data.addFrame(new Phaser.Frame(i, x, y, frameWidth, frameHeight, '', uuid));
-
-            PIXI.TextureCache[uuid] = new PIXI.Texture(PIXI.BaseTextureCache[key], {
-                x: x,
-                y: y,
-                width: frameWidth,
-                height: frameHeight
-            });
+            data.addFrame(new Phaser.Frame(i, x, y, frameWidth, frameHeight, ''));
 
             x += frameWidth + spacing;
 
@@ -52745,10 +53166,9 @@ Phaser.AnimationParser = {
     * @method Phaser.AnimationParser.JSONData
     * @param {Phaser.Game} game - A reference to the currently running game.
     * @param {object} json - The JSON data from the Texture Atlas. Must be in Array format.
-    * @param {string} cacheKey - The Game.Cache asset key of the texture image.
     * @return {Phaser.FrameData} A FrameData object containing the parsed frames.
     */
-    JSONData: function (game, json, cacheKey) {
+    JSONData: function (game, json) {
 
         //  Malformed?
         if (!json['frames'])
@@ -52767,24 +53187,14 @@ Phaser.AnimationParser = {
 
         for (var i = 0; i < frames.length; i++)
         {
-            var uuid = game.rnd.uuid();
-
             newFrame = data.addFrame(new Phaser.Frame(
                 i,
                 frames[i].frame.x,
                 frames[i].frame.y,
                 frames[i].frame.w,
                 frames[i].frame.h,
-                frames[i].filename,
-                uuid
+                frames[i].filename
             ));
-
-            PIXI.TextureCache[uuid] = new PIXI.Texture(PIXI.BaseTextureCache[cacheKey], {
-                x: frames[i].frame.x,
-                y: frames[i].frame.y,
-                width: frames[i].frame.w,
-                height: frames[i].frame.h
-            });
 
             if (frames[i].trimmed)
             {
@@ -52810,10 +53220,9 @@ Phaser.AnimationParser = {
     * @method Phaser.AnimationParser.JSONDataHash
     * @param {Phaser.Game} game - A reference to the currently running game.
     * @param {object} json - The JSON data from the Texture Atlas. Must be in JSON Hash format.
-    * @param {string} cacheKey - The Game.Cache asset key of the texture image.
     * @return {Phaser.FrameData} A FrameData object containing the parsed frames.
     */
-    JSONDataHash: function (game, json, cacheKey) {
+    JSONDataHash: function (game, json) {
 
         //  Malformed?
         if (!json['frames'])
@@ -52833,24 +53242,14 @@ Phaser.AnimationParser = {
 
         for (var key in frames)
         {
-            var uuid = game.rnd.uuid();
-
             newFrame = data.addFrame(new Phaser.Frame(
                 i,
                 frames[key].frame.x,
                 frames[key].frame.y,
                 frames[key].frame.w,
                 frames[key].frame.h,
-                key,
-                uuid
+                key
             ));
-
-            PIXI.TextureCache[uuid] = new PIXI.Texture(PIXI.BaseTextureCache[cacheKey], {
-                x: frames[key].frame.x,
-                y: frames[key].frame.y,
-                width: frames[key].frame.w,
-                height: frames[key].frame.h
-            });
 
             if (frames[key].trimmed)
             {
@@ -52878,10 +53277,9 @@ Phaser.AnimationParser = {
     * @method Phaser.AnimationParser.XMLData
     * @param {Phaser.Game} game - A reference to the currently running game.
     * @param {object} xml - The XML data from the Texture Atlas. Must be in Starling XML format.
-    * @param {string} cacheKey - The Game.Cache asset key of the texture image.
     * @return {Phaser.FrameData} A FrameData object containing the parsed frames.
     */
-    XMLData: function (game, xml, cacheKey) {
+    XMLData: function (game, xml) {
 
         //  Malformed?
         if (!xml.getElementsByTagName('TextureAtlas'))
@@ -52895,7 +53293,6 @@ Phaser.AnimationParser = {
         var frames = xml.getElementsByTagName('SubTexture');
         var newFrame;
 
-        var uuid;
         var name;
         var frame;
         var x;
@@ -52909,8 +53306,6 @@ Phaser.AnimationParser = {
 
         for (var i = 0; i < frames.length; i++)
         {
-            uuid = game.rnd.uuid();
-
             frame = frames[i].attributes;
             
             name = frame.name.value;
@@ -52930,15 +53325,9 @@ Phaser.AnimationParser = {
                 frameHeight = parseInt(frame.frameHeight.value, 10);
             }
 
-            newFrame = data.addFrame(new Phaser.Frame(i, x, y, width, height, name, uuid));
+            newFrame = data.addFrame(new Phaser.Frame(i, x, y, width, height, name));
 
-            PIXI.TextureCache[uuid] = new PIXI.Texture(PIXI.BaseTextureCache[cacheKey], {
-                x: x,
-                y: y,
-                width: width,
-                height: height
-            });
-                        //  Trimmed?
+            //  Trimmed?
             if (frameX !== null || frameY !== null)
             {
                 newFrame.setTrim(true, width, height, frameX, frameY, frameWidth, frameHeight);
@@ -53000,6 +53389,12 @@ Phaser.Cache = function (game) {
     * @private
     */
     this._sounds = {};
+
+    /**
+    * @property {object} _videos - Video key-value container.
+    * @private
+    */
+    this._videos = {};
 
     /**
     * @property {object} _text - Text key-value container.
@@ -53084,6 +53479,7 @@ Phaser.Cache = function (game) {
     this._cacheMap[Phaser.Cache.CANVAS] = this._canvases;
     this._cacheMap[Phaser.Cache.IMAGE] = this._images;
     this._cacheMap[Phaser.Cache.TEXTURE] = this._textures;
+    this._cacheMap[Phaser.Cache.VIDEO] = this._videos;
     this._cacheMap[Phaser.Cache.SOUND] = this._sounds;
     this._cacheMap[Phaser.Cache.TEXT] = this._text;
     this._cacheMap[Phaser.Cache.PHYSICS] = this._physics;
@@ -53167,6 +53563,12 @@ Phaser.Cache.JSON = 11;
 * @type {number}
 */
 Phaser.Cache.XML = 12;
+
+/**
+* @constant
+* @type {number}
+*/
+Phaser.Cache.VIDEO = 13;
 
 Phaser.Cache.prototype = {
 
@@ -53255,7 +53657,7 @@ Phaser.Cache.prototype = {
         this._images[key] = { url: url, data: data, frameWidth: frameWidth, frameHeight: frameHeight, margin: margin, spacing: spacing };
 
         PIXI.BaseTextureCache[key] = new PIXI.BaseTexture(data);
-        PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
+        // PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
 
         this._images[key].frameData = Phaser.AnimationParser.spriteSheet(this.game, key, frameWidth, frameHeight, frameMax, margin, spacing);
 
@@ -53295,19 +53697,23 @@ Phaser.Cache.prototype = {
         this._images[key] = { url: url, data: data };
 
         PIXI.BaseTextureCache[key] = new PIXI.BaseTexture(data);
-        PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
+        // PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
 
-        if (format == Phaser.Loader.TEXTURE_ATLAS_JSON_ARRAY)
-        {
-            this._images[key].frameData = Phaser.AnimationParser.JSONData(this.game, atlasData, key);
-        }
-        else if (format == Phaser.Loader.TEXTURE_ATLAS_JSON_HASH)
-        {
-            this._images[key].frameData = Phaser.AnimationParser.JSONDataHash(this.game, atlasData, key);
-        }
-        else if (format == Phaser.Loader.TEXTURE_ATLAS_XML_STARLING)
+        if (format == Phaser.Loader.TEXTURE_ATLAS_XML_STARLING)
         {
             this._images[key].frameData = Phaser.AnimationParser.XMLData(this.game, atlasData, key);
+        }
+        else
+        {
+            //  Let's just work it out from the frames array
+            if (Array.isArray(atlasData.frames))
+            {
+                this._images[key].frameData = Phaser.AnimationParser.JSONData(this.game, atlasData, key);
+            }
+            else
+            {
+                this._images[key].frameData = Phaser.AnimationParser.JSONDataHash(this.game, atlasData, key);
+            }
         }
 
         this._resolveURL(url, this._images[key]);
@@ -53330,7 +53736,7 @@ Phaser.Cache.prototype = {
         this._images[key] = { url: url, data: data };
 
         PIXI.BaseTextureCache[key] = new PIXI.BaseTexture(data);
-        PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
+        // PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
 
         Phaser.LoaderParser.bitmapFont(this.game, xmlData, key, xSpacing, ySpacing);
 
@@ -53470,7 +53876,7 @@ Phaser.Cache.prototype = {
         this._images[key].frameData.addFrame(new Phaser.Frame(0, 0, 0, data.width, data.height, url, this.game.rnd.uuid()));
 
         PIXI.BaseTextureCache[key] = new PIXI.BaseTexture(data);
-        PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
+        // PIXI.TextureCache[key] = new PIXI.Texture(PIXI.BaseTextureCache[key]);
 
         this._resolveURL(url, this._images[key]);
 
@@ -53573,127 +53979,19 @@ Phaser.Cache.prototype = {
     },
 
     /**
-    * Get a canvas object from the cache by its key.
+    * Adds a Video file into the Cache. The file must have already been loaded, typically via Phaser.Loader.
     *
-    * @method Phaser.Cache#getCanvas
-    * @param {string} key - Asset key of the canvas to retrieve from the Cache.
-    * @return {object} The canvas object.
+    * @method Phaser.Cache#addVideo
+    * @param {string} key - Asset key for the video.
+    * @param {string} url - URL of this video file.
+    * @param {object} data - Extra video data.
+    * @param {boolean} isBlob - True if the file was preloaded via xhr and the data parameter is a Blob. false if a Video tag was created instead.
     */
-    getCanvas: function (key) {
+    addVideo: function (key, url, data, isBlob) {
 
-        if (this._canvases[key])
-        {
-            return this._canvases[key].canvas;
-        }
-        else
-        {
-            console.warn('Phaser.Cache.getCanvas: Invalid key: "' + key + '"');
-            return null;
-        }
+        this._videos[key] = { url: url, data: data, isBlob: isBlob, locked: true };
 
-    },
-
-    /**
-    * Get a BitmapData object from the cache by its key.
-    *
-    * @method Phaser.Cache#getBitmapData
-    * @param {string} key - Asset key of the BitmapData object to retrieve from the Cache.
-    * @return {Phaser.BitmapData} The requested BitmapData object if found, or null if not.
-    */
-    getBitmapData: function (key) {
-
-        if (this._bitmapDatas[key])
-        {
-            return this._bitmapDatas[key].data;
-        }
-        else
-        {
-            console.warn('Phaser.Cache.getBitmapData: Invalid key: "' + key + '"');
-            return null;
-        }
-
-    },
-
-    /**
-    * Get a BitmapFont object from the cache by its key.
-    *
-    * @method Phaser.Cache#getBitmapFont
-    * @param {string} key - Asset key of the BitmapFont object to retrieve from the Cache.
-    * @return {Phaser.BitmapFont} The requested BitmapFont object if found, or null if not.
-    */
-    getBitmapFont: function (key) {
-
-        if (this._bitmapFont[key])
-        {
-            return this._bitmapFont[key];
-        }
-        else
-        {
-            console.warn('Phaser.Cache.getBitmapFont: Invalid key: "' + key + '"');
-            return null;
-        }
-
-    },
-
-    /**
-    * Get a physics data object from the cache by its key. You can get either the entire data set, a single object or a single fixture of an object from it.
-    *
-    * @method Phaser.Cache#getPhysicsData
-    * @param {string} key - Asset key of the physics data object to retrieve from the Cache.
-    * @param {string} [object=null] - If specified it will return just the physics object that is part of the given key, if null it will return them all.
-    * @param {string} fixtureKey - Fixture key of fixture inside an object. This key can be set per fixture with the Phaser Exporter.
-    * @return {object} The requested physics object data if found.
-    */
-    getPhysicsData: function (key, object, fixtureKey) {
-
-        if (typeof object === 'undefined' || object === null)
-        {
-            //  Get 'em all
-            if (this._physics[key])
-            {
-                return this._physics[key].data;
-            }
-            else
-            {
-                console.warn('Phaser.Cache.getPhysicsData: Invalid key: "' + key + '"');
-            }
-        }
-        else
-        {
-            if (this._physics[key] && this._physics[key].data[object])
-            {
-                var fixtures = this._physics[key].data[object];
-
-                //try to find a fixture by it's fixture key if given
-                if (fixtures && fixtureKey)
-                {
-                    for (var fixture in fixtures)
-                    {
-                        //  This contains the fixture data of a polygon or a circle
-                        fixture = fixtures[fixture];
-
-                        //  Test the key
-                        if (fixture.fixtureKey === fixtureKey)
-                        {
-                            return fixture;
-                        }
-                    }
-
-                    //  We did not find the requested fixture
-                    console.warn('Phaser.Cache.getPhysicsData: Could not find given fixtureKey: "' + fixtureKey + ' in ' + key + '"');
-                }
-                else
-                {
-                    return fixtures;
-                }
-            }
-            else
-            {
-                console.warn('Phaser.Cache.getPhysicsData: Invalid key/object: "' + key + ' / ' + object + '"');
-            }
-        }
-
-        return null;
+        this._resolveURL(url, this._videos[key]);
 
     },
 
@@ -53765,6 +54063,19 @@ Phaser.Cache.prototype = {
     checkSoundKey: function (key) {
 
         return this.checkKey(Phaser.Cache.SOUND, key);
+
+    },
+
+    /**
+    * Checks if the given key exists in the Video Cache.
+    *
+    * @method Phaser.Cache#checkVideoKey
+    * @param {string} key - Asset key of the video file to check is in the Cache.
+    * @return {boolean} True if the key exists, otherwise false.
+    */
+    checkVideoKey: function (key) {
+
+        return this.checkKey(Phaser.Cache.VIDEO, key);
 
     },
 
@@ -53890,6 +54201,131 @@ Phaser.Cache.prototype = {
         }
 
         return false;
+
+    },
+
+    /**
+    * Get a canvas object from the cache by its key.
+    *
+    * @method Phaser.Cache#getCanvas
+    * @param {string} key - Asset key of the canvas to retrieve from the Cache.
+    * @return {object} The canvas object.
+    */
+    getCanvas: function (key) {
+
+        if (this._canvases[key])
+        {
+            return this._canvases[key].canvas;
+        }
+        else
+        {
+            console.warn('Phaser.Cache.getCanvas: Invalid key: "' + key + '"');
+            return null;
+        }
+
+    },
+
+    /**
+    * Get a BitmapData object from the cache by its key.
+    *
+    * @method Phaser.Cache#getBitmapData
+    * @param {string} key - Asset key of the BitmapData object to retrieve from the Cache.
+    * @return {Phaser.BitmapData} The requested BitmapData object if found, or null if not.
+    */
+    getBitmapData: function (key) {
+
+        if (this._bitmapDatas[key])
+        {
+            return this._bitmapDatas[key].data;
+        }
+        else
+        {
+            console.warn('Phaser.Cache.getBitmapData: Invalid key: "' + key + '"');
+            return null;
+        }
+
+    },
+
+    /**
+    * Get a BitmapFont object from the cache by its key.
+    *
+    * @method Phaser.Cache#getBitmapFont
+    * @param {string} key - Asset key of the BitmapFont object to retrieve from the Cache.
+    * @return {Phaser.BitmapFont} The requested BitmapFont object if found, or null if not.
+    */
+    getBitmapFont: function (key) {
+
+        if (this._bitmapFont[key])
+        {
+            return this._bitmapFont[key];
+        }
+        else
+        {
+            console.warn('Phaser.Cache.getBitmapFont: Invalid key: "' + key + '"');
+            return null;
+        }
+
+    },
+
+    /**
+    * Get a physics data object from the cache by its key. You can get either the entire data set, a single object or a single fixture of an object from it.
+    *
+    * @method Phaser.Cache#getPhysicsData
+    * @param {string} key - Asset key of the physics data object to retrieve from the Cache.
+    * @param {string} [object=null] - If specified it will return just the physics object that is part of the given key, if null it will return them all.
+    * @param {string} fixtureKey - Fixture key of fixture inside an object. This key can be set per fixture with the Phaser Exporter.
+    * @return {object} The requested physics object data if found.
+    */
+    getPhysicsData: function (key, object, fixtureKey) {
+
+        if (typeof object === 'undefined' || object === null)
+        {
+            //  Get 'em all
+            if (this._physics[key])
+            {
+                return this._physics[key].data;
+            }
+            else
+            {
+                console.warn('Phaser.Cache.getPhysicsData: Invalid key: "' + key + '"');
+            }
+        }
+        else
+        {
+            if (this._physics[key] && this._physics[key].data[object])
+            {
+                var fixtures = this._physics[key].data[object];
+
+                //try to find a fixture by it's fixture key if given
+                if (fixtures && fixtureKey)
+                {
+                    for (var fixture in fixtures)
+                    {
+                        //  This contains the fixture data of a polygon or a circle
+                        fixture = fixtures[fixture];
+
+                        //  Test the key
+                        if (fixture.fixtureKey === fixtureKey)
+                        {
+                            return fixture;
+                        }
+                    }
+
+                    //  We did not find the requested fixture
+                    console.warn('Phaser.Cache.getPhysicsData: Could not find given fixtureKey: "' + fixtureKey + ' in ' + key + '"');
+                }
+                else
+                {
+                    return fixtures;
+                }
+            }
+            else
+            {
+                console.warn('Phaser.Cache.getPhysicsData: Invalid key/object: "' + key + ' / ' + object + '"');
+            }
+        }
+
+        return null;
 
     },
 
@@ -54061,24 +54497,43 @@ Phaser.Cache.prototype = {
     },
 
     /**
-    * DEPRECATED: Please use Cache.getRenderTexture instead. This method will be removed in Phaser 2.2.0.
-    * 
-    * Get a RenderTexture by key.
+    * Gets a PIXI.Texture by key from the Cache.
     *
-    * @method Phaser.Cache#getTexture
-    * @deprecated Please use Cache.getRenderTexture instead. This method will be removed in Phaser 2.2.0.
-    * @param {string} key - Asset key of the RenderTexture to retrieve from the Cache.
-    * @return {Phaser.RenderTexture} The RenderTexture object.
+    * @method Phaser.Cache#getPixiTexture
+    * @param {string} key - Asset key of the Texture to retrieve from the Cache.
+    * @return {PIXI.Texture} The Texture object.
     */
-    getTexture: function (key) {
+    getPixiTexture: function (key) {
 
-        if (this._textures[key])
+        if (PIXI.TextureCache[key])
         {
-            return this._textures[key];
+            return PIXI.TextureCache[key];
         }
         else
         {
-            console.warn('Phaser.Cache.getTexture: Invalid key: "' + key + '"');
+            console.warn('Phaser.Cache.getPixiTexture: Invalid key: "' + key + '"');
+            return null;
+        }
+
+    },
+
+    /**
+    * Gets a PIXI.BaseTexture by key from the Cache.
+    *
+    * @method Phaser.Cache#getPixiBaseTexture
+    * @param {string} key - Asset key of the BaseTexture to retrieve from the Cache.
+    * @return {PIXI.BaseTexture} The BaseTexture object.
+    */
+    getPixiBaseTexture: function (key) {
+
+        if (PIXI.BaseTextureCache[key])
+        {
+            return PIXI.BaseTextureCache[key];
+        }
+        else
+        {
+            console.warn('Phaser.Cache.getPixiBaseTexture: Invalid key: "' + key + '"');
+            return null;
         }
 
     },
@@ -54151,6 +54606,27 @@ Phaser.Cache.prototype = {
     isSoundReady: function (key) {
 
         return (this._sounds[key] && this._sounds[key].decoded && this.game.sound.touchLocked === false);
+
+    },
+
+    /**
+    * Get video by key.
+    *
+    * @method Phaser.Cache#getVideo
+    * @param {string} key - Asset key of the video to retrieve from the Cache.
+    * @return {Phaser.Sound} The video object.
+    */
+    getVideo: function (key) {
+
+        if (this._videos[key])
+        {
+            return this._videos[key];
+        }
+        else
+        {
+            console.warn('Phaser.Cache.getVideo: Invalid key: "' + key + '"');
+            return null;
+        }
 
     },
 
@@ -54327,6 +54803,10 @@ Phaser.Cache.prototype = {
                 array = this._sounds;
                 break;
 
+            case Phaser.Cache.VIDEO:
+                array = this._videos;
+                break;
+
             case Phaser.Cache.TEXT:
                 array = this._text;
                 break;
@@ -54417,6 +54897,16 @@ Phaser.Cache.prototype = {
     */
     removeSound: function (key) {
         delete this._sounds[key];
+    },
+
+    /**
+    * Removes a video from the cache.
+    *
+    * @method Phaser.Cache#removeVideo
+    * @param {string} key - Key of the asset you want to remove.
+    */
+    removeVideo: function (key) {
+        delete this._videos[key];
     },
 
     /**
@@ -54551,6 +55041,7 @@ Phaser.Cache.prototype = {
         var containers = [
             this._canvases,
             this._sounds,
+            this._videos,
             this._text,
             this._json,
             this._xml,
@@ -54694,9 +55185,13 @@ Phaser.Loader = function (game) {
     this.onFileStart = new Phaser.Signal();
 
     /**
-    * This event is dispatched when a file has either loaded or failed to load.
+    * This event is dispatched when a file has either loaded or failed to load.    *
     *
-    * Params: `(progress, file key, success?, total loaded files, total files)`
+    * Any function bound to this will receive the following parameters:
+    *
+    * progress, file key, success?, total loaded files, total files
+    *
+    * Where progress is a number between 1 and 100 (inclusive) representing the percentage of the load.
     * 
     * @property {Phaser.Signal} onFileComplete
     */
@@ -55041,11 +55536,34 @@ Phaser.Loader.prototype = {
     * @protected
     * @param {string} type - The type of resource to add to the list (image, audio, xml, etc).
     * @param {string} key - The unique Cache ID key of this resource.
-    * @param {string} url - The URL the asset will be loaded from.
+    * @param {string} [url] - The URL the asset will be loaded from.
     * @param {object} [properties=(none)] - Any additional properties needed to load the file. These are added directly to the added file object and overwrite any defaults.
     * @param {boolean} [overwrite=false] - If true then this will overwrite a file asset of the same type/key. Otherwise it will will only add a new asset. If overwrite is true, and the asset is already being loaded (or has been loaded), then it is appended instead.
+    * @param {string} [extension] - If no URL is given the Loader will sometimes auto-generate the URL based on the key, using this as the extension.
+    * @return {Phaser.Loader} This instance of the Phaser Loader.
     */
-    addToFileList: function (type, key, url, properties, overwrite) {
+    addToFileList: function (type, key, url, properties, overwrite, extension) {
+
+        if (typeof overwrite === 'undefined') { overwrite = false; }
+        
+        if (typeof key === 'undefined' || key === '')
+        {
+            console.warn("Phaser.Loader: Invalid or no key given of type " + type);
+            return this;
+        }
+
+        if (typeof url === 'undefined' || url === null)
+        {
+            if (extension)
+            {
+                url = key + extension;
+            }
+            else
+            {
+                console.warn("Phaser.Loader: No URL given for file type: " + type + " key: " + key);
+                return this;
+            }
+        }
 
         var file = {
             type: type,
@@ -55087,6 +55605,8 @@ Phaser.Loader.prototype = {
             this._fileList.push(file);
             this._totalFileCount++;
         }
+
+        return this;
 
     },
 
@@ -55178,111 +55698,165 @@ Phaser.Loader.prototype = {
     },
 
     /**
-    * Add an 'image' to the Loader.
+    * Adds an Image to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * Phaser can load all common image types: png, jpg, gif and any other format the browser can natively handle.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the image via `Cache.getImage(key)`
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "alien"
+    * and no URL is given then the Loader will set the URL to be "alien.png". It will always add `.png` as the extension.
+    * If you do not desire this action then provide a URL.
     *
     * @method Phaser.Loader#image
     * @param {string} key - Unique asset key of this image file.
-    * @param {string} url - URL of image file.
+    * @param {string} [url] - URL of an image file. If undefined or `null` the url will be set to `<key>.png`, i.e. if `key` was "alien" then the URL will be "alien.png".
     * @param {boolean} [overwrite=false] - If an unloaded file with a matching key already exists in the queue, this entry will overwrite it.
     * @return {Phaser.Loader} This Loader instance.
     */
     image: function (key, url, overwrite) {
 
-        if (typeof overwrite === 'undefined') { overwrite = false; }
-
-        this.addToFileList('image', key, url, undefined, overwrite);
-
-        return this;
+        return this.addToFileList('image', key, url, undefined, overwrite, '.png');
 
     },
 
     /**
-    * Add a 'text' file to the Loader.
+    * Adds a Text file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getText(key)`
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "alien"
+    * and no URL is given then the Loader will set the URL to be "alien.txt". It will always add `.txt` as the extension.
+    * If you do not desire this action then provide a URL.
     *
     * @method Phaser.Loader#text
     * @param {string} key - Unique asset key of the text file.
-    * @param {string} url - URL of the text file.
+    * @param {string} [url] - URL of the text file. If undefined or `null` the url will be set to `<key>.txt`, i.e. if `key` was "alien" then the URL will be "alien.txt".
     * @param {boolean} [overwrite=false] - If an unloaded file with a matching key already exists in the queue, this entry will overwrite it.
     * @return {Phaser.Loader} This Loader instance.
     */
     text: function (key, url, overwrite) {
 
-        if (typeof overwrite === 'undefined') { overwrite = false; }
-
-        this.addToFileList('text', key, url, undefined, overwrite);
-
-        return this;
+        return this.addToFileList('text', key, url, undefined, overwrite, '.txt');
 
     },
 
     /**
-    * Add a 'json' file to the Loader.
+    * Adds a JSON file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getJSON(key)`. JSON files are automatically parsed upon load.
+    * If you need to control when the JSON is parsed then use `Loader.text` instead and parse the text file as needed.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "alien"
+    * and no URL is given then the Loader will set the URL to be "alien.json". It will always add `.json` as the extension.
+    * If you do not desire this action then provide a URL.
     *
     * @method Phaser.Loader#json
     * @param {string} key - Unique asset key of the json file.
-    * @param {string} url - URL of the json file.
+    * @param {string} [url] - URL of the JSON file. If undefined or `null` the url will be set to `<key>.json`, i.e. if `key` was "alien" then the URL will be "alien.json".
     * @param {boolean} [overwrite=false] - If an unloaded file with a matching key already exists in the queue, this entry will overwrite it.
     * @return {Phaser.Loader} This Loader instance.
     */
     json: function (key, url, overwrite) {
 
-        if (typeof overwrite === 'undefined') { overwrite = false; }
-
-        this.addToFileList('json', key, url, undefined, overwrite);
-
-        return this;
+        return this.addToFileList('json', key, url, undefined, overwrite, '.json');
 
     },
 
     /**
-    * Add an XML ('xml') file to the Loader.
+    * Adds an XML file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getXML(key)`.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "alien"
+    * and no URL is given then the Loader will set the URL to be "alien.xml". It will always add `.xml` as the extension.
+    * If you do not desire this action then provide a URL.
     *
     * @method Phaser.Loader#xml
     * @param {string} key - Unique asset key of the xml file.
-    * @param {string} url - URL of the xml file.
+    * @param {string} [url] - URL of the XML file. If undefined or `null` the url will be set to `<key>.xml`, i.e. if `key` was "alien" then the URL will be "alien.xml".
     * @param {boolean} [overwrite=false] - If an unloaded file with a matching key already exists in the queue, this entry will overwrite it.
     * @return {Phaser.Loader} This Loader instance.
     */
     xml: function (key, url, overwrite) {
 
-        if (typeof overwrite === 'undefined') { overwrite = false; }
-
-        this.addToFileList('xml', key, url, undefined, overwrite);
-
-        return this;
+        return this.addToFileList('xml', key, url, undefined, overwrite, '.xml');
 
     },
 
     /**
-    * Add a JavaScript ('script') file to the Loader.
+    * Adds a JavaScript file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "alien"
+    * and no URL is given then the Loader will set the URL to be "alien.js". It will always add `.js` as the extension.
+    * If you do not desire this action then provide a URL.
     *
-    * The loaded JavaScript is automatically turned into a script tag and executed, so be careful what you load!
+    * Upon successful load the JavaScript is automatically turned into a script tag and executed, so be careful what you load!
     *
     * A callback, which will be invoked as the script tag has been created, can also be specified.
     * The callback must return relevant `data`.
     *
     * @method Phaser.Loader#script
     * @param {string} key - Unique asset key of the script file.
-    * @param {string} url - URL of the JavaScript file.
+    * @param {string} [url] - URL of the JavaScript file. If undefined or `null` the url will be set to `<key>.js`, i.e. if `key` was "alien" then the URL will be "alien.js".
     * @param {function} [callback=(none)] - Optional callback that will be called after the script tag has loaded, so you can perform additional processing.
-    * @param {object} [callbackContext=(loader)] - The context under which the callback will be applied. If not specified it will use the callback itself as the context.
+    * @param {object} [callbackContext=(loader)] - The context under which the callback will be applied. If not specified it will use the Phaser Loader as the context.
     * @return {Phaser.Loader} This Loader instance.
     */
     script: function (key, url, callback, callbackContext) {
 
         if (typeof callback === 'undefined') { callback = false; }
 
-        // Why is the default callback context the ..callback?
-        if (callback !== false && typeof callbackContext === 'undefined') { callbackContext = callback; }
+        if (callback !== false && typeof callbackContext === 'undefined') { callbackContext = this; }
 
-        this.addToFileList('script', key, url, { syncPoint: true, callback: callback, callbackContext: callbackContext });
-
-        return this;
+        return this.addToFileList('script', key, url, { syncPoint: true, callback: callback, callbackContext: callbackContext }, false, '.js');
 
     },
 
     /**
-    * Add a 'binary' file to the Loader.
+    * Adds a binary file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getBinary(key)`.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "alien"
+    * and no URL is given then the Loader will set the URL to be "alien.bin". It will always add `.bin` as the extension.
+    * If you do not desire this action then provide a URL.
     *
     * It will be loaded via xhr with a responseType of "arraybuffer". You can specify an optional callback to process the file after load.
     * When the callback is called it will be passed 2 parameters: the key of the file and the file data.
@@ -55291,7 +55865,7 @@ Phaser.Loader.prototype = {
     *
     * @method Phaser.Loader#binary
     * @param {string} key - Unique asset key of the binary file.
-    * @param {string} url - URL of the binary file.
+    * @param {string} [url] - URL of the binary file. If undefined or `null` the url will be set to `<key>.bin`, i.e. if `key` was "alien" then the URL will be "alien.bin".
     * @param {function} [callback=(none)] - Optional callback that will be passed the file after loading, so you can perform additional processing on it.
     * @param {object} [callbackContext] - The context under which the callback will be applied. If not specified it will use the callback itself as the context.
     * @return {Phaser.Loader} This Loader instance.
@@ -55303,20 +55877,37 @@ Phaser.Loader.prototype = {
         // Why is the default callback context the ..callback?
         if (callback !== false && typeof callbackContext === 'undefined') { callbackContext = callback; }
 
-        this.addToFileList('binary', key, url, { callback: callback, callbackContext: callbackContext });
-
-        return this;
+        return this.addToFileList('binary', key, url, { callback: callback, callbackContext: callbackContext }, false, '.bin');
 
     },
 
     /**
-    * Add a new sprite sheet ('spritesheet') to the loader.
+    * Adds a Sprite Sheet to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    *
+    * To clarify the terminology that Phaser uses: A Sprite Sheet is an image containing frames, usually of an animation, that are all equal
+    * dimensions and often in sequence. For example if the frame size is 32x32 then every frame in the sprite sheet will be that size. 
+    * Sometimes (outside of Phaser) the term "sprite sheet" is used to refer to a texture atlas.
+    * A Texture Atlas works by packing together images as best it can, using whatever frame sizes it likes, often with cropping and trimming
+    * the frames in the process. Software such as Texture Packer, Flash CC or Shoebox all generate texture atlases, not sprite sheets.
+    * If you've got an atlas then use `Loader.atlas` instead.
+    * 
+    * The key must be a unique String. It is used to add the image to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getImage(key)`. Sprite sheets, being image based, live in the same Cache as all other Images.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "alien"
+    * and no URL is given then the Loader will set the URL to be "alien.png". It will always add `.png` as the extension.
+    * If you do not desire this action then provide a URL.
     *
     * @method Phaser.Loader#spritesheet
     * @param {string} key - Unique asset key of the sheet file.
-    * @param {string} url - URL of the sheet file.
-    * @param {number} frameWidth - Width of each single frame.
-    * @param {number} frameHeight - Height of each single frame.
+    * @param {string} url - URL of the sprite sheet file. If undefined or `null` the url will be set to `<key>.png`, i.e. if `key` was "alien" then the URL will be "alien.png".
+    * @param {number} frameWidth - Width in pixels of a single frame in the sprite sheet.
+    * @param {number} frameHeight - Height in pixels of a single frame in the sprite sheet.
     * @param {number} [frameMax=-1] - How many frames in this sprite sheet. If not specified it will divide the whole image into frames.
     * @param {number} [margin=0] - If the frames have been drawn with a margin, specify the amount here.
     * @param {number} [spacing=0] - If the frames have been drawn with spacing between them, specify the amount here.
@@ -55328,14 +55919,20 @@ Phaser.Loader.prototype = {
         if (typeof margin === 'undefined') { margin = 0; }
         if (typeof spacing === 'undefined') { spacing = 0; }
 
-        this.addToFileList('spritesheet', key, url, { frameWidth: frameWidth, frameHeight: frameHeight, frameMax: frameMax, margin: margin, spacing: spacing });
-
-        return this;
+        return this.addToFileList('spritesheet', key, url, { frameWidth: frameWidth, frameHeight: frameHeight, frameMax: frameMax, margin: margin, spacing: spacing }, false, '.png');
 
     },
 
     /**
-    * Add a new 'audio' file to the loader.
+    * Adds an audio file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getSound(key)`.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
     *
     * @method Phaser.Loader#audio
     * @param {string} key - Unique asset key of the audio file.
@@ -55344,10 +55941,15 @@ Phaser.Loader.prototype = {
     *    For example: `"jump.mp3"`, `['jump.mp3', 'jump.ogg', 'jump.m4a']`, or `[{uri: "data:<opus_resource>", type: 'opus'}, 'fallback.mp3']`.
     *    BLOB and DATA URIs can be used but only support automatic detection when used in the pair form; otherwise the format must be manually checked before adding the resource.
     * @param {boolean} [autoDecode=true] - When using Web Audio the audio files can either be decoded at load time or run-time.
-    *    Audio files can't be played until they are decoded and, if specified, this enables immediate decoding. Decoding is a non-blocking async process.
+    *    Audio files can't be played until they are decoded and, if specified, this enables immediate decoding. Decoding is a non-blocking async process, however it consumes huge amounts of CPU time on mobiles especially.
     * @return {Phaser.Loader} This Loader instance.
     */
     audio: function (key, urls, autoDecode) {
+
+        if (this.game.sound.noAudio)
+        {
+            return this;
+        }
 
         if (typeof autoDecode === 'undefined') { autoDecode = true; }
 
@@ -55356,17 +55958,24 @@ Phaser.Loader.prototype = {
             urls = [urls];
         }
 
-        this.addToFileList('audio', key, urls, { buffer: null, autoDecode: autoDecode });
-
-        return this;
+        return this.addToFileList('audio', key, urls, { buffer: null, autoDecode: autoDecode });
 
     },
 
     /**
-    * Add a new audiosprite file to the loader.
+    * Adds an audio sprite file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
     *
     * Audio Sprites are a combination of audio files and a JSON configuration.
+    * 
     * The JSON follows the format of that created by https://github.com/tonistiigi/audiosprite
+    * 
+    * Retrieve the file via `Cache.getSoundData(key)`.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
     *
     * @method Phaser.Loader#audiosprite
     * @param {string} key - Unique asset key of the audio file.
@@ -55374,10 +55983,15 @@ Phaser.Loader.prototype = {
     * @param {string} [jsonURL=null] - The URL of the audiosprite configuration JSON object. If you wish to pass the data directly set this parameter to null.
     * @param {string|object} [jsonData=null] - A JSON object or string containing the audiosprite configuration data. This is ignored if jsonURL is not null.
     * @param {boolean} [autoDecode=true] - When using Web Audio the audio files can either be decoded at load time or run-time.
-    *    Audio files can't be played until they are decoded and, if specified, this enables immediate decoding. Decoding is a non-blocking async process.
+    *    Audio files can't be played until they are decoded and, if specified, this enables immediate decoding. Decoding is a non-blocking async process, however it consumes huge amounts of CPU time on mobiles especially.
     * @return {Phaser.Loader} This Loader instance.
     */
     audiosprite: function(key, urls, jsonURL, jsonData, autoDecode) {
+
+        if (this.game.sound.noAudio)
+        {
+            return this;
+        }
 
         if (typeof jsonURL === 'undefined') { jsonURL = null; }
         if (typeof jsonData === 'undefined') { jsonData = null; }
@@ -55407,13 +56021,68 @@ Phaser.Loader.prototype = {
 
     },
 
+
     /**
-    * Add a new 'tilemap' loading request. If data is supplied the object is loaded immediately.
+    * Adds a video file to the current load queue.
+    * 
+    * The file is **not** loaded immediately after calling this method. The file is added to the queue ready to be loaded when the loader starts.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getVideo(key)`.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    *
+    * @method Phaser.Loader#video
+    * @param {string} key - Unique asset key of the video file.
+    * @param {string|string[]|object[]} urls - Either a single string or an array of URIs or pairs of `{uri: .., type: ..}`.
+    *    If an array is specified then the first URI (or URI + mime pair) that is device-compatible will be selected.
+    *    For example: `"boom.mp4"`, `['boom.mp4', 'boom.ogg', 'boom.webm']`, or `[{uri: "data:<opus_resource>", type: 'opus'}, 'fallback.mp4']`.
+    *    BLOB and DATA URIs can be used but only support automatic detection when used in the pair form; otherwise the format must be manually checked before adding the resource.
+    * @param {boolean} [asBlob=false] - Video files can either be loaded via the creation of a video element which has its src property set.
+    *    Or they can be loaded via xhr, stored as binary data in memory and then converted to a Blob. This isn't supported in IE9 or Android 2.
+    *    If you need to have the same video playing at different times across multiple Sprites then you need to load it as a Blob.
+    * @return {Phaser.Loader} This Loader instance.
+    */
+    video: function (key, urls, asBlob) {
+
+        if (typeof asBlob === 'undefined') { asBlob = false; }
+
+        if (typeof urls === 'string')
+        {
+            urls = [urls];
+        }
+
+        return this.addToFileList('video', key, urls, { buffer: null, asBlob: asBlob });
+
+    },
+
+    /**
+    * Adds a Tile Map data file to the current load queue.
+    *
+    * You can choose to either load the data externally, by providing a URL to a json file.
+    * Or you can pass in a JSON object or String via the `data` parameter.
+    * If you pass a String the data is automatically run through `JSON.parse` and then immediately added to the Phaser.Cache.
+    * 
+    * If a URL is provided the file is **not** loaded immediately after calling this method, but is added to the load queue.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    * 
+    * Retrieve the file via `Cache.getTilemapData(key)`. JSON files are automatically parsed upon load.
+    * If you need to control when the JSON is parsed then use `Loader.text` instead and parse the text file as needed.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified and no data is given then the Loader will take the key and create a filename from that.
+    * For example if the key is "level1" and no URL or data is given then the Loader will set the URL to be "level1.json".
+    * If you set the format to be Tilemap.CSV it will set the URL to be "level1.csv" instead.
+    * 
+    * If you do not desire this action then provide a URL or data object.
     *
     * @method Phaser.Loader#tilemap
     * @param {string} key - Unique asset key of the tilemap data.
-    * @param {string} [url] - The url of the map data file (csv/json)
-    * @param {object} [data] - An optional JSON data object. If given then the url is ignored and this JSON object is used for map data instead.
+    * @param {string} [url] - URL of the tile map file. If undefined or `null` and no data is given the url will be set to `<key>.json`, i.e. if `key` was "level1" then the URL will be "level1.json".
+    * @param {object|string} [data] - An optional JSON data object. If given then the url is ignored and this JSON object is used for map data instead.
     * @param {number} [format=Phaser.Tilemap.CSV] - The format of the map data. Either Phaser.Tilemap.CSV or Phaser.Tilemap.TILED_JSON.
     * @return {Phaser.Loader} This Loader instance.
     */
@@ -55425,9 +56094,14 @@ Phaser.Loader.prototype = {
 
         if (!url && !data)
         {
-            console.warn('Phaser.Loader.tilemap - Both url and data are null. One must be set.');
-
-            return this;
+            if (format === Phaser.Tilemap.CSV)
+            {
+                url = key + '.csv';
+            }
+            else
+            {
+                url = key + '.json';
+            }
         }
 
         //  A map data object has been given
@@ -55439,7 +56113,7 @@ Phaser.Loader.prototype = {
                 case Phaser.Tilemap.CSV:
                     break;
 
-                //  An xml string or object has been given
+                //  A json string or object has been given
                 case Phaser.Tilemap.TILED_JSON:
 
                     if (typeof data === 'string')
@@ -55461,14 +56135,33 @@ Phaser.Loader.prototype = {
     },
 
     /**
-    * Add a new 'physics' data object loading request. If data is supplied the object is loaded immediately.
+    * Adds a physics data file to the current load queue.
     *
-    * The data must be in Lime + Corona JSON format. Physics Editor by code'n'web exports in this format natively.
+    * The data must be in `Lime + Corona` JSON format. [Physics Editor](https://www.codeandweb.com) by code'n'web exports in this format natively.
+    * 
+    * You can choose to either load the data externally, by providing a URL to a json file.
+    * Or you can pass in a JSON object or String via the `data` parameter.
+    * If you pass a String the data is automatically run through `JSON.parse` and then immediately added to the Phaser.Cache.
+    * 
+    * If a URL is provided the file is **not** loaded immediately after calling this method, but is added to the load queue.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    *
+    * Retrieve the file via `Cache.getJSON(key)`. JSON files are automatically parsed upon load.
+    * If you need to control when the JSON is parsed then use `Loader.text` instead and parse the text file as needed.
+    * 
+    * The URL can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the URL isn't specified and no data is given then the Loader will take the key and create a filename from that.
+    * For example if the key is "alien" and no URL or data is given then the Loader will set the URL to be "alien.json".
+    * It will always use `.json` as the extension.
+    * 
+    * If you do not desire this action then provide a URL or data object.
     *
     * @method Phaser.Loader#physics
     * @param {string} key - Unique asset key of the physics json data.
-    * @param {string} [url] - The url of the map data file (csv/json)
-    * @param {object} [data] - An optional JSON data object. If given then the url is ignored and this JSON object is used for physics data instead.
+    * @param {string} [url] - URL of the physics data file. If undefined or `null` and no data is given the url will be set to `<key>.json`, i.e. if `key` was "alien" then the URL will be "alien.json".
+    * @param {object|string} [data] - An optional JSON data object. If given then the url is ignored and this JSON object is used for physics data instead.
     * @param {string} [format=Phaser.Physics.LIME_CORONA_JSON] - The format of the physics data.
     * @return {Phaser.Loader} This Loader instance.
     */
@@ -55480,9 +56173,7 @@ Phaser.Loader.prototype = {
 
         if (!url && !data)
         {
-            console.warn('Phaser.Loader.physics - Both url and data are null. One must be set.');
-
-            return this;
+            url = key + '.json';
         }
 
         //  A map data object has been given
@@ -55505,12 +56196,38 @@ Phaser.Loader.prototype = {
     },
 
     /**
-    * Add a new bitmap font ('bitmapfont') loading request.
+    * Adds Bitmap Font files to the current load queue.
+    * 
+    * To create the Bitmap Font files you can use:
+    *
+    * BMFont (Windows, free): http://www.angelcode.com/products/bmfont/
+    * Glyph Designer (OS X, commercial): http://www.71squared.com/en/glyphdesigner
+    * Littera (Web-based, free): http://kvazars.com/littera/
+    *
+    * You can choose to either load the data externally, by providing a URL to an xml file.
+    * Or you can pass in an XML object or String via the `xmlData` parameter.
+    * If you pass a String the data is automatically run through `Loader.parseXML` and then immediately added to the Phaser.Cache.
+    * 
+    * If URLs are provided the files are **not** loaded immediately after calling this method, but are added to the load queue.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    * 
+    * Retrieve the file via `Cache.getBitmapFont(key)`. XML files are automatically parsed upon load.
+    * If you need to control when the XML is parsed then use `Loader.text` instead and parse the XML file as needed.
+    * 
+    * The URLs can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the textureURL isn't specified then the Loader will take the key and create a filename from that.
+    * For example if the key is "megaFont" and textureURL is null then the Loader will set the URL to be "megaFont.png".
+    * The same is true for the xmlURL. If xmlURL isn't specified and no xmlData has been provided then the Loader will
+    * set the xmlURL to be the key. For example if the key is "megaFont" the xmlURL will be set to "megaFont.xml".
+    * 
+    * If you do not desire this action then provide URLs and / or a data object.
     *
     * @method Phaser.Loader#bitmapFont
     * @param {string} key - Unique asset key of the bitmap font.
-    * @param {string} textureURL - The url of the font image file.
-    * @param {string} [xmlURL] - The url of the font data file (xml/fnt)
+    * @param {string} [textureURL] - URL of the Bitmap Font texture file. If undefined or `null` the url will be set to `<key>.png`, i.e. if `key` was "megaFont" then the URL will be "megaFont.png".
+    * @param {string} [xmlURL] - URL of the Bitmap Font data file. If undefined or `null` and no data is given the url will be set to `<key>.xml`, i.e. if `key` was "megaFont" then the URL will be "megaFont.xml".
     * @param {object} [xmlData] - An optional XML data object.
     * @param {number} [xSpacing=0] - If you'd like to add additional horizontal spacing between the characters then set the pixel value here.
     * @param {number} [ySpacing=0] - If you'd like to add additional vertical spacing between the lines then set the pixel value here.
@@ -55518,10 +56235,20 @@ Phaser.Loader.prototype = {
     */
     bitmapFont: function (key, textureURL, xmlURL, xmlData, xSpacing, ySpacing) {
 
+        if (typeof textureURL === 'undefined' || textureURL === null)
+        {
+            textureURL = key + '.png';
+        }
+
         if (typeof xmlURL === 'undefined') { xmlURL = null; }
         if (typeof xmlData === 'undefined') { xmlData = null; }
         if (typeof xSpacing === 'undefined') { xSpacing = 0; }
         if (typeof ySpacing === 'undefined') { ySpacing = 0; }
+
+        if (!xmlURL && !xmlData)
+        {
+            xmlURL = key + '.xml';
+        }
 
         //  A URL to a json/xml file has been given
         if (xmlURL)
@@ -55549,16 +56276,43 @@ Phaser.Loader.prototype = {
     },
 
     /**
-    * Add a new texture atlas ('textureatlas') to the loader. This atlas uses the JSON Array data format.
+    * Adds a Texture Atlas file to the current load queue.
     *
-    * Texture Atlases can be created with tools such as [Texture Packer](https://www.codeandweb.com/texturepacker/phaser) and
+    * Unlike `Loader.atlasJSONHash` this call expects the atlas data to be in a JSON Array format.
+    * 
+    * To create the Texture Atlas you can use tools such as:
+    *
+    * [Texture Packer](https://www.codeandweb.com/texturepacker/phaser)
     * [Shoebox](http://renderhjs.net/shoebox/)
+    * 
+    * If using Texture Packer we recommend you enable "Trim sprite names".
+    * If your atlas software has an option to "rotate" the resulting frames, you must disable it.
+    *
+    * You can choose to either load the data externally, by providing a URL to a json file.
+    * Or you can pass in a JSON object or String via the `atlasData` parameter.
+    * If you pass a String the data is automatically run through `JSON.parse` and then immediately added to the Phaser.Cache.
+    * 
+    * If URLs are provided the files are **not** loaded immediately after calling this method, but are added to the load queue.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    * 
+    * Retrieve the file via `Cache.getImage(key)`. JSON files are automatically parsed upon load.
+    * If you need to control when the JSON is parsed then use `Loader.text` instead and parse the JSON file as needed.
+    * 
+    * The URLs can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the textureURL isn't specified then the Loader will take the key and create a filename from that.
+    * For example if the key is "player" and textureURL is null then the Loader will set the URL to be "player.png".
+    * The same is true for the atlasURL. If atlasURL isn't specified and no atlasData has been provided then the Loader will
+    * set the atlasURL to be the key. For example if the key is "player" the atlasURL will be set to "player.json".
+    * 
+    * If you do not desire this action then provide URLs and / or a data object.
     *
     * @method Phaser.Loader#atlasJSONArray
     * @param {string} key - Unique asset key of the texture atlas file.
-    * @param {string} textureURL - The url of the texture atlas image file.
-    * @param {string} [atlasURL] - The url of the texture atlas data file (json/xml). You don't need this if you are passing an atlasData object instead.
-    * @param {object} [atlasData] - A JSON or XML data object. You don't need this if the data is being loaded from a URL.
+    * @param {string} [textureURL] - URL of the texture atlas image file. If undefined or `null` the url will be set to `<key>.png`, i.e. if `key` was "alien" then the URL will be "alien.png".
+    * @param {string} [atlasURL] - URL of the texture atlas data file. If undefined or `null` and no atlasData is given, the url will be set to `<key>.json`, i.e. if `key` was "alien" then the URL will be "alien.json".
+    * @param {object} [atlasData] - A JSON data object. You don't need this if the data is being loaded from a URL.
     * @return {Phaser.Loader} This Loader instance.
     */
     atlasJSONArray: function (key, textureURL, atlasURL, atlasData) {
@@ -55568,16 +56322,43 @@ Phaser.Loader.prototype = {
     },
 
     /**
-    * Add a new texture atlas ('textureatlas') to the loader. This atlas uses the JSON Hash data format.
+    * Adds a Texture Atlas file to the current load queue.
     *
-    * Texture Atlases can be created with tools such as [Texture Packer](https://www.codeandweb.com/texturepacker/phaser) and
+    * Unlike `Loader.atlas` this call expects the atlas data to be in a JSON Hash format.
+    * 
+    * To create the Texture Atlas you can use tools such as:
+    *
+    * [Texture Packer](https://www.codeandweb.com/texturepacker/phaser)
     * [Shoebox](http://renderhjs.net/shoebox/)
+    * 
+    * If using Texture Packer we recommend you enable "Trim sprite names".
+    * If your atlas software has an option to "rotate" the resulting frames, you must disable it.
+    *
+    * You can choose to either load the data externally, by providing a URL to a json file.
+    * Or you can pass in a JSON object or String via the `atlasData` parameter.
+    * If you pass a String the data is automatically run through `JSON.parse` and then immediately added to the Phaser.Cache.
+    * 
+    * If URLs are provided the files are **not** loaded immediately after calling this method, but are added to the load queue.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    * 
+    * Retrieve the file via `Cache.getImage(key)`. JSON files are automatically parsed upon load.
+    * If you need to control when the JSON is parsed then use `Loader.text` instead and parse the JSON file as needed.
+    * 
+    * The URLs can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the textureURL isn't specified then the Loader will take the key and create a filename from that.
+    * For example if the key is "player" and textureURL is null then the Loader will set the URL to be "player.png".
+    * The same is true for the atlasURL. If atlasURL isn't specified and no atlasData has been provided then the Loader will
+    * set the atlasURL to be the key. For example if the key is "player" the atlasURL will be set to "player.json".
+    * 
+    * If you do not desire this action then provide URLs and / or a data object.
     *
     * @method Phaser.Loader#atlasJSONHash
     * @param {string} key - Unique asset key of the texture atlas file.
-    * @param {string} textureURL - The url of the texture atlas image file.
-    * @param {string} [atlasURL] - The url of the texture atlas data file (json/xml). You don't need this if you are passing an atlasData object instead.
-    * @param {object} [atlasData] - A JSON or XML data object. You don't need this if the data is being loaded from a URL.
+    * @param {string} [textureURL] - URL of the texture atlas image file. If undefined or `null` the url will be set to `<key>.png`, i.e. if `key` was "alien" then the URL will be "alien.png".
+    * @param {string} [atlasURL] - URL of the texture atlas data file. If undefined or `null` and no atlasData is given, the url will be set to `<key>.json`, i.e. if `key` was "alien" then the URL will be "alien.json".
+    * @param {object} [atlasData] - A JSON data object. You don't need this if the data is being loaded from a URL.
     * @return {Phaser.Loader} This Loader instance.
     */
     atlasJSONHash: function (key, textureURL, atlasURL, atlasData) {
@@ -55587,40 +56368,120 @@ Phaser.Loader.prototype = {
     },
 
     /**
-    * Add a new texture atlas ('textureatlas') to the loader. This atlas uses the Starling XML data format.
+    * Adds a Texture Atlas file to the current load queue.
+    *
+    * This call expects the atlas data to be in the Starling XML data format.
+    * 
+    * To create the Texture Atlas you can use tools such as:
+    *
+    * [Texture Packer](https://www.codeandweb.com/texturepacker/phaser)
+    * [Shoebox](http://renderhjs.net/shoebox/)
+    *
+    * If using Texture Packer we recommend you enable "Trim sprite names".
+    * If your atlas software has an option to "rotate" the resulting frames, you must disable it.
+    * 
+    * You can choose to either load the data externally, by providing a URL to an xml file.
+    * Or you can pass in an XML object or String via the `atlasData` parameter.
+    * If you pass a String the data is automatically run through `Loader.parseXML` and then immediately added to the Phaser.Cache.
+    * 
+    * If URLs are provided the files are **not** loaded immediately after calling this method, but are added to the load queue.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    * 
+    * Retrieve the file via `Cache.getImage(key)`. XML files are automatically parsed upon load.
+    * If you need to control when the XML is parsed then use `Loader.text` instead and parse the XML file as needed.
+    * 
+    * The URLs can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the textureURL isn't specified then the Loader will take the key and create a filename from that.
+    * For example if the key is "player" and textureURL is null then the Loader will set the URL to be "player.png".
+    * The same is true for the atlasURL. If atlasURL isn't specified and no atlasData has been provided then the Loader will
+    * set the atlasURL to be the key. For example if the key is "player" the atlasURL will be set to "player.xml".
+    * 
+    * If you do not desire this action then provide URLs and / or a data object.
     *
     * @method Phaser.Loader#atlasXML
     * @param {string} key - Unique asset key of the texture atlas file.
-    * @param {string} textureURL - The url of the texture atlas image file.
-    * @param {string} [atlasURL] - The url of the texture atlas data file (json/xml). You don't need this if you are passing an atlasData object instead.
-    * @param {object} [atlasData] - A JSON or XML data object. You don't need this if the data is being loaded from a URL.
+    * @param {string} [textureURL] - URL of the texture atlas image file. If undefined or `null` the url will be set to `<key>.png`, i.e. if `key` was "alien" then the URL will be "alien.png".
+    * @param {string} [atlasURL] - URL of the texture atlas data file. If undefined or `null` and no atlasData is given, the url will be set to `<key>.json`, i.e. if `key` was "alien" then the URL will be "alien.xml".
+    * @param {object} [atlasData] - An XML data object. You don't need this if the data is being loaded from a URL.
     * @return {Phaser.Loader} This Loader instance.
     */
     atlasXML: function (key, textureURL, atlasURL, atlasData) {
+
+        if (typeof atlasURL === 'undefined') { atlasURL = null; }
+        if (typeof atlasData === 'undefined') { atlasData = null; }
+
+        if (!atlasURL && !atlasData)
+        {
+            atlasURL = key + '.xml';
+        }
 
         return this.atlas(key, textureURL, atlasURL, atlasData, Phaser.Loader.TEXTURE_ATLAS_XML_STARLING);
 
     },
 
     /**
-    * Add a new texture atlas ('textureatlas') to the loader.
+    * Adds a Texture Atlas file to the current load queue.
     *
-    * Texture Atlases can be created with tools such as [Texture Packer](https://www.codeandweb.com/texturepacker/phaser) and
+    * To create the Texture Atlas you can use tools such as:
+    *
+    * [Texture Packer](https://www.codeandweb.com/texturepacker/phaser)
     * [Shoebox](http://renderhjs.net/shoebox/)
+    *
+    * If using Texture Packer we recommend you enable "Trim sprite names".
+    * If your atlas software has an option to "rotate" the resulting frames, you must disable it.
+    *
+    * You can choose to either load the data externally, by providing a URL to a json file.
+    * Or you can pass in a JSON object or String via the `atlasData` parameter.
+    * If you pass a String the data is automatically run through `JSON.parse` and then immediately added to the Phaser.Cache.
+    * 
+    * If URLs are provided the files are **not** loaded immediately after calling this method, but are added to the load queue.
+    * 
+    * The key must be a unique String. It is used to add the file to the Phaser.Cache upon successful load.
+    * 
+    * Retrieve the file via `Cache.getImage(key)`. JSON files are automatically parsed upon load.
+    * If you need to control when the JSON is parsed then use `Loader.text` instead and parse the JSON file as needed.
+    * 
+    * The URLs can be relative or absolute. If the URL is relative the Loader.baseURL value will be prepended to it.
+    * 
+    * If the textureURL isn't specified then the Loader will take the key and create a filename from that.
+    * For example if the key is "player" and textureURL is null then the Loader will set the URL to be "player.png".
+    * The same is true for the atlasURL. If atlasURL isn't specified and no atlasData has been provided then the Loader will
+    * set the atlasURL to be the key. For example if the key is "player" the atlasURL will be set to "player.json".
+    * 
+    * If you do not desire this action then provide URLs and / or a data object.
     *
     * @method Phaser.Loader#atlas
     * @param {string} key - Unique asset key of the texture atlas file.
-    * @param {string} textureURL - The url of the texture atlas image file.
-    * @param {string} [atlasURL] - The url of the texture atlas data file (json/xml). You don't need this if you are passing an atlasData object instead.
+    * @param {string} [textureURL] - URL of the texture atlas image file. If undefined or `null` the url will be set to `<key>.png`, i.e. if `key` was "alien" then the URL will be "alien.png".
+    * @param {string} [atlasURL] - URL of the texture atlas data file. If undefined or `null` and no atlasData is given, the url will be set to `<key>.json`, i.e. if `key` was "alien" then the URL will be "alien.json".
     * @param {object} [atlasData] - A JSON or XML data object. You don't need this if the data is being loaded from a URL.
-    * @param {number} [format] - A value describing the format of the data, the default is Phaser.Loader.TEXTURE_ATLAS_JSON_ARRAY.
+    * @param {number} [format] - The format of the data. Can be Phaser.Loader.TEXTURE_ATLAS_JSON_ARRAY (the default), Phaser.Loader.TEXTURE_ATLAS_JSON_HASH or Phaser.Loader.TEXTURE_ATLAS_XML_STARLING.
     * @return {Phaser.Loader} This Loader instance.
     */
     atlas: function (key, textureURL, atlasURL, atlasData, format) {
 
+        if (typeof textureURL === 'undefined' || textureURL === null)
+        {
+            textureURL = key + '.png';
+        }
+
         if (typeof atlasURL === 'undefined') { atlasURL = null; }
         if (typeof atlasData === 'undefined') { atlasData = null; }
         if (typeof format === 'undefined') { format = Phaser.Loader.TEXTURE_ATLAS_JSON_ARRAY; }
+
+        if (!atlasURL && !atlasData)
+        {
+            if (format === Phaser.Loader.TEXTURE_ATLAS_XML_STARLING)
+            {
+                atlasURL = key + '.xml';
+            }
+            else
+            {
+                atlasURL = key + '.json';
+            }
+        }
 
         //  A URL to a json/xml file has been given
         if (atlasURL)
@@ -56031,6 +56892,10 @@ Phaser.Loader.prototype = {
                     this.spritesheet(file.key, file.url, file.frameWidth, file.frameHeight, file.frameMax, file.margin, file.spacing);
                     break;
 
+                case "video":
+                    this.video(file.key, file.urls);
+                    break;
+
                 case "audio":
                     this.audio(file.key, file.urls, file.autoDecode);
                     break;
@@ -56072,13 +56937,25 @@ Phaser.Loader.prototype = {
     },
 
     /**
-    * Transforms the asset URL. The default implementation prepends the baseURL.
+    * Transforms the asset URL.
+    * The default implementation prepends the baseURL if the url doesn't being with http or //
     *
     * @method Phaser.Loader#transformUrl
     * @protected
+    * @param {string} url - The url to transform
+    * @return {string} The transformed url
     */
-    transformUrl: function (url /*, file */) {
-        return this.baseURL + url;
+    transformUrl: function (url) {
+
+        if (url.substr(0, 4) === 'http' || url.substr(0, 2) === '//')
+        {
+            return url;
+        }
+        else
+        {
+            return this.baseURL + url;
+        }
+
     },
 
     /**
@@ -56123,7 +57000,27 @@ Phaser.Loader.prototype = {
                 }
                 else
                 {
-                    this.fileError(file, null, 'no supported audio URL specified');
+                    this.fileError(file, null, 'No supported audio URL specified or device does not have audio playback support');
+                }
+                break;
+
+            case 'video':
+                file.url = this.getVideoURL(file.url);
+
+                if (file.url)
+                {
+                    if (file.asBlob)
+                    {
+                        this.xhrLoad(file, this.transformUrl(file.url, file), 'arraybuffer', this.fileComplete);
+                    }
+                    else
+                    {
+                        this.loadVideoTag(file);
+                    }
+                }
+                else
+                {
+                    this.fileError(file, null, 'No supported video URL specified or device does not have video playback support');
                 }
                 break;
 
@@ -56208,6 +57105,41 @@ Phaser.Loader.prototype = {
             file.data.onerror = null;
             this.fileComplete(file);
         }
+
+    },
+
+    /**
+    * Continue async loading through a Video tag.
+    * @private
+    */
+    loadVideoTag: function (file) {
+
+        var _this = this;
+
+        file.data = document.createElement("video");
+        file.data.name = file.key;
+        
+        var playThroughEvent = function () {
+            file.data.removeEventListener('canplay', playThroughEvent, false);
+            file.data.removeEventListener('canplaythrough', playThroughEvent, false);
+            file.data.onerror = null;
+            // Why does this cycle through games?
+            Phaser.GAMES[_this.game.id].load.fileComplete(file);
+        };
+
+        file.data.onerror = function () {
+            file.data.removeEventListener('canplay', playThroughEvent, false);
+            file.data.removeEventListener('canplaythrough', playThroughEvent, false);
+            file.data.onerror = null;
+            _this.fileError(file);
+        };
+
+        file.data.controls = false;
+        file.data.autoplay = false;
+        file.data.addEventListener('canplay', playThroughEvent, false);
+        file.data.addEventListener('canplaythrough', playThroughEvent, false);
+        file.data.src = this.transformUrl(file.url, file);
+        file.data.load();
 
     },
 
@@ -56419,12 +57351,67 @@ Phaser.Loader.prototype = {
     *
     * It is assumed that the device can play "blob:" or "data:" URIs - There is no mime-type checking on data URIs.
     *
+    * @method Phaser.Loader#getVideoURL
+    * @private
+    * @param {object[]|string[]} urls - See {@link #video} for format.
+    * @return {string} The URL to try and fetch; or null.
+    */
+    getVideoURL: function (urls) {
+
+        for (var i = 0; i < urls.length; i++)
+        {
+            var url = urls[i];
+            var videoType;
+
+            if (url.uri) // {uri: .., type: ..} pair
+            {
+                url = url.uri;
+                videoType = url.type;
+            }
+            else
+            {
+                // Assume direct-data URI can be played if not in a paired form; select immediately
+                if (url.indexOf("blob:") === 0 || url.indexOf("data:") === 0)
+                {
+                    return url;
+                }
+
+                if (url.indexOf("?") >= 0) // Remove query from URL
+                {
+                    url = url.substr(0, url.indexOf("?"));
+                }
+
+                var extension = url.substr((Math.max(0, url.lastIndexOf(".")) || Infinity) + 1);
+
+                videoType = extension.toLowerCase();
+            }
+
+            if (this.game.device.canPlayVideo(videoType))
+            {
+                return urls[i];
+            }
+        }
+
+        return null;
+
+    },
+
+    /**
+    * Give a bunch of URLs, return the first URL that has an extension this device thinks it can play.
+    *
+    * It is assumed that the device can play "blob:" or "data:" URIs - There is no mime-type checking on data URIs.
+    *
     * @method Phaser.Loader#getAudioURL
     * @private
     * @param {object[]|string[]} urls - See {@link #audio} for format.
     * @return {string} The URL to try and fetch; or null.
     */
     getAudioURL: function (urls) {
+
+        if (this.game.sound.noAudio)
+        {
+            return null;
+        }
 
         for (var i = 0; i < urls.length; i++)
         {
@@ -56561,6 +57548,23 @@ Phaser.Loader.prototype = {
                     loadNext = false;
                     this.xhrLoad(file, this.transformUrl(file.xmlURL, file), 'text', this.xmlLoadComplete);
                 }
+                break;
+
+            case 'video':
+
+                if (file.asBlob)
+                {
+                    try
+                    {
+                        file.data = new Blob([new Uint8Array(xhr.response)]);
+                    }
+                    catch (e)
+                    {
+                        throw new Error("Phaser.Loader. Unable to parse video file as Blob: " + file.key);
+                    }
+                }
+                
+                this.game.cache.addVideo(file.key, file.url, file.data, file.asBlob);
                 break;
 
             case 'audio':
@@ -58227,6 +59231,66 @@ Phaser.SoundManager = function (game) {
     this.onSoundDecode = new Phaser.Signal();
 
     /**
+    * This signal is dispatched whenever the global volume changes. The new volume is passed as the only parameter to your callback.
+    * @property {Phaser.Signal} onVolumeChange
+    */
+    this.onVolumeChange = new Phaser.Signal();
+
+    /**
+    * This signal is dispatched when the SoundManager is globally muted, either directly via game code or as a result of the game pausing.
+    * @property {Phaser.Signal} onMute
+    */
+    this.onMute = new Phaser.Signal();
+
+    /**
+    * This signal is dispatched when the SoundManager is globally un-muted, either directly via game code or as a result of the game resuming from a pause.
+    * @property {Phaser.Signal} onUnMute
+    */
+    this.onUnMute = new Phaser.Signal();
+
+    /**
+    * @property {AudioContext} context - The AudioContext being used for playback.
+    * @default
+    */
+    this.context = null;
+
+    /**
+    * @property {boolean} usingWebAudio - True the SoundManager and device are both using Web Audio.
+    * @readonly
+    */
+    this.usingWebAudio = false;
+
+    /**
+    * @property {boolean} usingAudioTag - True the SoundManager and device are both using the Audio tag instead of Web Audio.
+    * @readonly
+    */
+    this.usingAudioTag = false;
+
+    /**
+    * @property {boolean} noAudio - True if audio been disabled via the PhaserGlobal (useful if you need to use a 3rd party audio library) or the device doesn't support any audio.
+    * @default
+    */
+    this.noAudio = false;
+
+    /**
+    * @property {boolean} connectToMaster - Used in conjunction with Sound.externalNode this allows you to stop a Sound node being connected to the SoundManager master gain node.
+    * @default
+    */
+    this.connectToMaster = true;
+
+    /**
+    * @property {boolean} touchLocked - true if the audio system is currently locked awaiting a touch event.
+    * @default
+    */
+    this.touchLocked = false;
+
+    /**
+    * @property {number} channels - The number of audio channels to use in playback.
+    * @default
+    */
+    this.channels = 32;
+
+    /**
     * @property {boolean} _codeMuted - Internal mute tracking var.
     * @private
     * @default
@@ -58284,48 +59348,6 @@ Phaser.SoundManager = function (game) {
     */
     this._watchContext = null;
 
-    /**
-    * @property {AudioContext} context - The AudioContext being used for playback.
-    * @default
-    */
-    this.context = null;
-
-    /**
-    * @property {boolean} usingWebAudio - true if this sound is being played with Web Audio.
-    * @readonly
-    */
-    this.usingWebAudio = true;
-
-    /**
-    * @property {boolean} usingAudioTag - true if the sound is being played via the Audio tag.
-    * @readonly
-    */
-    this.usingAudioTag = false;
-
-    /**
-    * @property {boolean} noAudio - Has audio been disabled via the PhaserGlobal object? Useful if you need to use a 3rd party audio library instead.
-    * @default
-    */
-    this.noAudio = false;
-
-    /**
-    * @property {boolean} connectToMaster - Used in conjunction with Sound.externalNode this allows you to stop a Sound node being connected to the SoundManager master gain node.
-    * @default
-    */
-    this.connectToMaster = true;
-
-    /**
-    * @property {boolean} touchLocked - true if the audio system is currently locked awaiting a touch event.
-    * @default
-    */
-    this.touchLocked = false;
-
-    /**
-    * @property {number} channels - The number of audio channels to use in playback.
-    * @default
-    */
-    this.channels = 32;
-
 };
 
 Phaser.SoundManager.prototype = {
@@ -58342,35 +59364,22 @@ Phaser.SoundManager.prototype = {
             this.channels = 1;
         }
 
-        if (!this.game.device.cocoonJS && this.game.device.iOS || (window['PhaserGlobal'] && window['PhaserGlobal'].fakeiOSTouchLock))
-        {
-            this.game.input.touch.callbackContext = this;
-            this.game.input.touch.touchStartCallback = this.unlock;
-            this.game.input.mouse.callbackContext = this;
-            this.game.input.mouse.mouseDownCallback = this.unlock;
-            this.touchLocked = true;
-        }
-        else
-        {
-            this.touchLocked = false;
-        }
-
+        //  PhaserGlobal overrides
         if (window['PhaserGlobal'])
         {
             //  Check to see if all audio playback is disabled (i.e. handled by a 3rd party class)
             if (window['PhaserGlobal'].disableAudio === true)
             {
-                this.usingWebAudio = false;
                 this.noAudio = true;
+                this.touchLocked = false;
                 return;
             }
 
             //  Check if the Web Audio API is disabled (for testing Audio Tag playback during development)
             if (window['PhaserGlobal'].disableWebAudio === true)
             {
-                this.usingWebAudio = false;
                 this.usingAudioTag = true;
-                this.noAudio = false;
+                this.touchLocked = false;
                 return;
             }
         }
@@ -58388,7 +59397,7 @@ Phaser.SoundManager.prototype = {
                 } catch (error) {
                     this.context = null;
                     this.usingWebAudio = false;
-                    this.noAudio = true;
+                    this.touchLocked = false;
                 }
             }
             else if (!!window['webkitAudioContext'])
@@ -58398,20 +59407,28 @@ Phaser.SoundManager.prototype = {
                 } catch (error) {
                     this.context = null;
                     this.usingWebAudio = false;
-                    this.noAudio = true;
+                    this.touchLocked = false;
                 }
             }
         }
 
-        if (!!window['Audio'] && this.context === null)
+        if (this.context === null)
         {
-            this.usingWebAudio = false;
-            this.usingAudioTag = true;
-            this.noAudio = false;
+            //  No Web Audio support - how about legacy Audio?
+            if (window['Audio'] === undefined)
+            {
+                this.noAudio = true;
+                return;
+            }
+            else
+            {
+                this.usingAudioTag = true;
+            }
         }
-
-        if (this.context !== null)
+        else
         {
+            this.usingWebAudio = true;
+
             if (typeof this.context.createGain === 'undefined')
             {
                 this.masterGain = this.context.createGainNode();
@@ -58425,33 +59442,54 @@ Phaser.SoundManager.prototype = {
             this.masterGain.connect(this.context.destination);
         }
 
+        if (!this.noAudio)
+        {
+            //  On mobile we need a native touch event before we can play anything, so capture it here
+            if (!this.game.device.cocoonJS && this.game.device.iOS || (window['PhaserGlobal'] && window['PhaserGlobal'].fakeiOSTouchLock))
+            {
+                this.setTouchLock();
+            }
+        }
+
+    },
+
+    /**
+    * Sets the Input Manager touch callback to be SoundManager.unlock.
+    * Required for iOS audio device unlocking. Mostly just used internally.
+    * 
+    * @method Phaser.SoundManager#setTouchLock
+    */
+    setTouchLock: function () {
+
+        this.game.input.touch.addTouchLockCallback(this.unlock, this);
+        this.touchLocked = true;
+
     },
 
     /**
     * Enables the audio, usually after the first touch.
+    * 
     * @method Phaser.SoundManager#unlock
+    * @return {boolean} True if the callback should be removed, otherwise false.
     */
     unlock: function () {
 
-        if (this.touchLocked === false)
+        if (this.noAudio || !this.touchLocked || this._unlockSource !== null)
         {
-            return;
+            return true;
         }
 
         //  Global override (mostly for Audio Tag testing)
-        if (this.game.device.webAudio === false || (window['PhaserGlobal'] && window['PhaserGlobal'].disableWebAudio === true))
+        if (this.usingAudioTag)
         {
-            //  Create an Audio tag?
             this.touchLocked = false;
             this._unlockSource = null;
-            this.game.input.touch.callbackContext = null;
-            this.game.input.touch.touchStartCallback = null;
-            this.game.input.mouse.callbackContext = null;
-            this.game.input.mouse.mouseDownCallback = null;
         }
-        else
+        else if (this.usingWebAudio)
         {
             // Create empty buffer and play it
+            // The SoundManager.update loop captures the state of it and then resets touchLocked to false
+
             var buffer = this.context.createBuffer(1, 1, 22050);
             this._unlockSource = this.context.createBufferSource();
             this._unlockSource.buffer = buffer;
@@ -58467,6 +59505,9 @@ Phaser.SoundManager.prototype = {
             }
         }
 
+        //  We can remove the event because we've done what we needed (started the unlock sound playing)
+        return true;
+
     },
 
     /**
@@ -58475,6 +59516,11 @@ Phaser.SoundManager.prototype = {
     * @method Phaser.SoundManager#stopAll
     */
     stopAll: function () {
+
+        if (this.noAudio)
+        {
+            return;
+        }
 
         for (var i = 0; i < this._sounds.length; i++)
         {
@@ -58493,6 +59539,11 @@ Phaser.SoundManager.prototype = {
     */
     pauseAll: function () {
 
+        if (this.noAudio)
+        {
+            return;
+        }
+
         for (var i = 0; i < this._sounds.length; i++)
         {
             if (this._sounds[i])
@@ -58509,6 +59560,11 @@ Phaser.SoundManager.prototype = {
     * @method Phaser.SoundManager#resumeAll
     */
     resumeAll: function () {
+
+        if (this.noAudio)
+        {
+            return;
+        }
 
         for (var i = 0; i < this._sounds.length; i++)
         {
@@ -58532,8 +59588,6 @@ Phaser.SoundManager.prototype = {
         sound = sound || null;
 
         var soundData = this.game.cache.getSoundData(key);
-
-        // console.log(key, 'soundData', soundData);
 
         if (soundData)
         {
@@ -58607,24 +59661,22 @@ Phaser.SoundManager.prototype = {
     },
 
     /**
-    * Updates every sound in the game.
+    * Updates every sound in the game, checks for audio unlock on mobile and monitors the decoding watch list.
     *
     * @method Phaser.SoundManager#update
+    * @protected
     */
     update: function () {
 
-        if (this.touchLocked)
+        if (this.noAudio)
         {
-            if (this.game.device.webAudio && this._unlockSource !== null)
-            {
-                if ((this._unlockSource.playbackState === this._unlockSource.PLAYING_STATE || this._unlockSource.playbackState === this._unlockSource.FINISHED_STATE))
-                {
-                    this.touchLocked = false;
-                    this._unlockSource = null;
-                    this.game.input.touch.callbackContext = null;
-                    this.game.input.touch.touchStartCallback = null;
-                }
-            }
+            return;
+        }
+
+        if (this.touchLocked && this._unlockSource !== null && (this._unlockSource.playbackState === this._unlockSource.PLAYING_STATE || this._unlockSource.playbackState === this._unlockSource.FINISHED_STATE))
+        {
+            this.touchLocked = false;
+            this._unlockSource = null;
         }
 
         for (var i = 0; i < this._sounds.length; i++)
@@ -58757,6 +59809,11 @@ Phaser.SoundManager.prototype = {
     */
     play: function (key, volume, loop) {
 
+        if (this.noAudio)
+        {
+            return;
+        }
+
         var sound = this.add(key, volume, loop);
 
         sound.play();
@@ -58766,7 +59823,7 @@ Phaser.SoundManager.prototype = {
     },
 
     /**
-    * Internal mute handler called automatically by the Sound.mute setter.
+    * Internal mute handler called automatically by the SoundManager.mute setter.
     *
     * @method Phaser.SoundManager#setMute
     * @private
@@ -58795,10 +59852,12 @@ Phaser.SoundManager.prototype = {
             }
         }
 
+        this.onMute.dispatch();
+
     },
 
     /**
-    * Internal mute handler called automatically by the Sound.mute setter.
+    * Internal mute handler called automatically by the SoundManager.mute setter.
     *
     * @method Phaser.SoundManager#unsetMute
     * @private
@@ -58825,6 +59884,8 @@ Phaser.SoundManager.prototype = {
                 this._sounds[i].mute = false;
             }
         }
+
+        this.onUnMute.dispatch();
 
     },
 
@@ -58903,41 +59964,49 @@ Object.defineProperty(Phaser.SoundManager.prototype, "mute", {
 
 /**
 * @name Phaser.SoundManager#volume
-* @property {number} volume - Gets or sets the global volume of the SoundManager, a value between 0 and 1.
+* @property {number} volume - Gets or sets the global volume of the SoundManager, a value between 0 and 1. The value given is clamped to the range 0 to 1.
 */
 Object.defineProperty(Phaser.SoundManager.prototype, "volume", {
 
     get: function () {
 
-        if (this.usingWebAudio)
-        {
-            return this.masterGain.gain.value;
-        }
-        else
-        {
-            return this._volume;
-        }
+        return this._volume;
 
     },
 
     set: function (value) {
 
-        this._volume = value;
-
-        if (this.usingWebAudio)
+        if (value < 0)
         {
-            this.masterGain.gain.value = value;
+            value = 0;
         }
-        else
+        else if (value > 1)
         {
-            //  Loop through the sound cache and change the volume of all html audio tags
-            for (var i = 0; i < this._sounds.length; i++)
+            value = 1;
+        }
+
+        if (this._volume !== value)
+        {
+            this._volume = value;
+
+            if (this.usingWebAudio)
             {
-                if (this._sounds[i].usingAudioTag)
+                this.masterGain.gain.value = value;
+            }
+            else
+            {
+                //  Loop through the sound cache and change the volume of all html audio tags
+                for (var i = 0; i < this._sounds.length; i++)
                 {
-                    this._sounds[i].volume = this._sounds[i].volume * value;
+                    if (this._sounds[i].usingAudioTag)
+                    {
+                        this._sounds[i].volume = this._sounds[i].volume * value;
+                    }
                 }
             }
+
+            this.onVolumeChange.dispatch(value);
+
         }
 
     }
@@ -59661,14 +60730,14 @@ Phaser.Utils.Debug.prototype = {
     },
 
     /**
-    * Render a Sprites Physics body if it has one set. Note this only works for Arcade and
-    * Ninja (AABB, circle only) Physics.
-    * To display a P2 body you should enable debug mode on the body when creating it.
+    * Render a Sprites Physics body if it has one set. The body is rendered as a filled or stroked rectangle.
+    * This only works for Arcade Physics, Ninja Physics (AABB and Circle only) and Box2D Physics bodies.
+    * To display a P2 Physics body you should enable debug mode on the body when creating it.
     *
     * @method Phaser.Utils.Debug#body
-    * @param {Phaser.Sprite} sprite - The sprite whos body will be rendered.
-    * @param {string} [color='rgba(0,255,0,0.4)'] - color of the debug info to be rendered. (format is css color string).
-    * @param {boolean} [filled=true] - Render the objected as a filled (default, true) or a stroked (false)
+    * @param {Phaser.Sprite} sprite - The Sprite who's body will be rendered.
+    * @param {string} [color='rgba(0,255,0,0.4)'] - Color of the debug rectangle to be rendered. The format is a CSS color string such as '#ff0000' or 'rgba(255,0,0,0.5)'.
+    * @param {boolean} [filled=true] - Render the body as a filled rectangle (true) or a stroked rectangle (false)
     */
     body: function (sprite, color, filled) {
 
@@ -60805,9 +61874,6 @@ Phaser.Color = {
 
         var out = { r: r || 0, g: g || 0, b: b || 0, a: a || 1, h: h || 0, s: s || 0, l: l || 0, v: v || 0, color: 0, color32: 0, rgba: '' };
 
-        out.color = Phaser.Color.getColor(out.r, out.g, out.b);
-        out.color32 = Phaser.Color.getColor32(out.a, out.r, out.g, out.b);
-
         return Phaser.Color.updateColor(out);
 
     },
@@ -60823,6 +61889,8 @@ Phaser.Color = {
     updateColor: function (out) {
 
         out.rgba = 'rgba(' + out.r.toString() + ',' + out.g.toString() + ',' + out.b.toString() + ',' + out.a.toString() + ')';
+        out.color = Phaser.Color.getColor(out.r, out.g, out.b);
+        out.color32 = Phaser.Color.getColor32(out.a, out.r, out.g, out.b);
 
         return out;
 
@@ -60979,6 +62047,7 @@ Phaser.Color = {
             out.g = parseInt(result[2], 10);
             out.b = parseInt(result[3], 10);
             out.a = result[4] !== undefined ? parseFloat(result[4]) : 1;
+            Phaser.Color.updateColor(out);
         }
 
         return out;
@@ -61331,6 +62400,373 @@ Phaser.Color = {
     */
     getBlue: function (color) {
         return color & 0xFF;
+    },
+
+    /**
+    * Blends the source color, ignoring the backdrop.
+    *
+    * @method Phaser.Color.blendNormal
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendNormal: function (a) {
+        return a;
+    },
+
+    /**
+    * Selects the lighter of the backdrop and source colors.
+    *
+    * @method Phaser.Color.blendLighten
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendLighten: function (a, b) {
+        return (b > a) ? b : a;
+    },
+
+    /**
+    * Selects the darker of the backdrop and source colors.
+    *
+    * @method Phaser.Color.blendDarken
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendDarken: function (a, b) {
+        return (b > a) ? a : b;
+    },
+
+    /**
+    * Multiplies the backdrop and source color values.
+    * The result color is always at least as dark as either of the two constituent
+    * colors. Multiplying any color with black produces black;
+    * multiplying with white leaves the original color unchanged.
+    *
+    * @method Phaser.Color.blendMultiply
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendMultiply: function (a, b) {
+        return (a * b) / 255;
+    },
+
+    /**
+    * Takes the average of the source and backdrop colors.
+    *
+    * @method Phaser.Color.blendAverage
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendAverage: function (a, b) {
+        return (a + b) / 2;
+    },
+
+    /**
+    * Adds the source and backdrop colors together and returns the value, up to a maximum of 255.
+    *
+    * @method Phaser.Color.blendAdd
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendAdd: function (a, b) {
+        return Math.min(255, a + b);
+    },
+
+    /**
+    * Combines the source and backdrop colors and returns their value minus 255.
+    *
+    * @method Phaser.Color.blendSubtract
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendSubtract: function (a, b) {
+        return Math.max(0, a + b - 255);
+    },
+
+    /**
+    * Subtracts the darker of the two constituent colors from the lighter.
+    * 
+    * Painting with white inverts the backdrop color; painting with black produces no change. 
+    *
+    * @method Phaser.Color.blendDifference
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendDifference: function (a, b) {
+        return Math.abs(a - b);
+    },
+
+    /**
+    * Negation blend mode.
+    *
+    * @method Phaser.Color.blendNegation
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendNegation: function (a, b) {
+        return 255 - Math.abs(255 - a - b);
+    },
+
+    /**
+    * Multiplies the complements of the backdrop and source color values, then complements the result.
+    * The result color is always at least as light as either of the two constituent colors. 
+    * Screening any color with white produces white; screening with black leaves the original color unchanged. 
+    *
+    * @method Phaser.Color.blendScreen
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendScreen: function (a, b) {
+        return 255 - (((255 - a) * (255 - b)) >> 8);
+    },
+
+    /**
+    * Produces an effect similar to that of the Difference mode, but lower in contrast. 
+    * Painting with white inverts the backdrop color; painting with black produces no change. 
+    *
+    * @method Phaser.Color.blendExclusion
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendExclusion: function (a, b) {
+        return a + b - 2 * a * b / 255;
+    },
+
+    /**
+    * Multiplies or screens the colors, depending on the backdrop color.
+    * Source colors overlay the backdrop while preserving its highlights and shadows. 
+    * The backdrop color is not replaced, but is mixed with the source color to reflect the lightness or darkness of the backdrop.
+    *
+    * @method Phaser.Color.blendOverlay
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendOverlay: function (a, b) {
+        return b < 128 ? (2 * a * b / 255) : (255 - 2 * (255 - a) * (255 - b) / 255);
+    },
+
+    /**
+    * Darkens or lightens the colors, depending on the source color value. 
+    * 
+    * If the source color is lighter than 0.5, the backdrop is lightened, as if it were dodged; 
+    * this is useful for adding highlights to a scene. 
+    * 
+    * If the source color is darker than 0.5, the backdrop is darkened, as if it were burned in. 
+    * The degree of lightening or darkening is proportional to the difference between the source color and 0.5; 
+    * if it is equal to 0.5, the backdrop is unchanged.
+    * 
+    * Painting with pure black or white produces a distinctly darker or lighter area, but does not result in pure black or white. 
+    * The effect is similar to shining a diffused spotlight on the backdrop. 
+    *
+    * @method Phaser.Color.blendSoftLight
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendSoftLight: function (a, b) {
+        return b < 128 ? (2 * ((a >> 1) + 64)) * (b / 255) : 255 - (2 * (255 - ((a >> 1) + 64)) * (255 - b) / 255);
+    },
+
+    /**
+    * Multiplies or screens the colors, depending on the source color value. 
+    * 
+    * If the source color is lighter than 0.5, the backdrop is lightened, as if it were screened; 
+    * this is useful for adding highlights to a scene. 
+    * 
+    * If the source color is darker than 0.5, the backdrop is darkened, as if it were multiplied; 
+    * this is useful for adding shadows to a scene. 
+    * 
+    * The degree of lightening or darkening is proportional to the difference between the source color and 0.5; 
+    * if it is equal to 0.5, the backdrop is unchanged.
+    * 
+    * Painting with pure black or white produces pure black or white. The effect is similar to shining a harsh spotlight on the backdrop. 
+    *
+    * @method Phaser.Color.blendHardLight
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendHardLight: function (a, b) {
+        return Phaser.Color.blendOverlay(b, a);
+    },
+
+    /**
+    * Brightens the backdrop color to reflect the source color. 
+    * Painting with black produces no change.
+    *
+    * @method Phaser.Color.blendColorDodge
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendColorDodge: function (a, b) {
+        return b === 255 ? b : Math.min(255, ((a << 8) / (255 - b)));
+    },
+
+    /**
+    * Darkens the backdrop color to reflect the source color.
+    * Painting with white produces no change. 
+    *
+    * @method Phaser.Color.blendColorBurn
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendColorBurn: function (a, b) {
+        return b === 0 ? b : Math.max(0, (255 - ((255 - a) << 8) / b));
+    },
+
+    /**
+    * An alias for blendAdd, it simply sums the values of the two colors.
+    *
+    * @method Phaser.Color.blendLinearDodge
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendLinearDodge: function (a, b) {
+        return Phaser.Color.blendAdd(a, b);
+    },
+
+    /**
+    * An alias for blendSubtract, it simply sums the values of the two colors and subtracts 255.
+    *
+    * @method Phaser.Color.blendLinearBurn
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendLinearBurn: function (a, b) {
+        return Phaser.Color.blendSubtract(a, b);
+    },
+
+    /**
+    * This blend mode combines Linear Dodge and Linear Burn (rescaled so that neutral colors become middle gray).
+    * Dodge applies to values of top layer lighter than middle gray, and burn to darker values.
+    * The calculation simplifies to the sum of bottom layer and twice the top layer, subtract 128. The contrast decreases.
+    *
+    * @method Phaser.Color.blendLinearLight
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendLinearLight: function (a, b) {
+        return b < 128 ? Phaser.Color.blendLinearBurn(a, 2 * b) : Phaser.Color.blendLinearDodge(a, (2 * (b - 128)));
+    },
+
+    /**
+    * This blend mode combines Color Dodge and Color Burn (rescaled so that neutral colors become middle gray).
+    * Dodge applies when values in the top layer are lighter than middle gray, and burn to darker values.
+    * The middle gray is the neutral color. When color is lighter than this, this effectively moves the white point of the bottom 
+    * layer down by twice the difference; when it is darker, the black point is moved up by twice the difference. The perceived contrast increases.
+    *
+    * @method Phaser.Color.blendVividLight
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendVividLight: function (a, b) {
+        return b < 128 ? Phaser.Color.blendColorBurn(a, 2 * b) : Phaser.Color.blendColorDodge(a, (2 * (b - 128)));
+    },
+
+    /**
+    * If the backdrop color (light source) is lighter than 50%, the blendDarken mode is used, and colors lighter than the backdrop color do not change.
+    * If the backdrop color is darker than 50% gray, colors lighter than the blend color are replaced, and colors darker than the blend color do not change.
+    *
+    * @method Phaser.Color.blendPinLight
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendPinLight: function (a, b) {
+        return b < 128 ? Phaser.Color.blendDarken(a, 2 * b) : Phaser.Color.blendLighten(a, (2 * (b - 128)));
+    },
+
+    /**
+    * Runs blendVividLight on the source and backdrop colors.
+    * If the resulting color is 128 or more, it receives a value of 255; if less than 128, a value of 0.
+    * Therefore, all blended pixels have red, green, and blue channel values of either 0 or 255.
+    * This changes all pixels to primary additive colors (red, green, or blue), white, or black.
+    *
+    * @method Phaser.Color.blendHardMix
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendHardMix: function (a, b) {
+        return Phaser.Color.blendVividLight(a, b) < 128 ? 0 : 255;
+    },
+
+    /**
+    * Reflect blend mode. This mode is useful when adding shining objects or light zones to images. 
+    *
+    * @method Phaser.Color.blendReflect
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendReflect: function (a, b) {
+        return b === 255 ? b : Math.min(255, (a * a / (255 - b)));
+    },
+
+    /**
+    * Glow blend mode. This mode is a variation of reflect mode with the source and backdrop colors swapped.
+    *
+    * @method Phaser.Color.blendGlow
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendGlow: function (a, b) {
+        return Phaser.Color.blendReflect(b, a);
+    },
+
+    /**
+    * Phoenix blend mode. This subtracts the lighter color from the darker color, and adds 255, giving a bright result.
+    *
+    * @method Phaser.Color.blendPhoenix
+    * @static
+    * @param {integer} a - The source color to blend, in the range 1 to 255.
+    * @param {integer} b - The backdrop color to blend, in the range 1 to 255.
+    * @returns {integer} The blended color value, in the range 1 to 255.
+    */
+    blendPhoenix: function (a, b) {
+        return Math.min(a, b) - Math.max(a, b) + 255;
     }
 
 };
@@ -61583,6 +63019,11 @@ Phaser.Physics = function (game, config) {
     */
     this.chipmunk = null;
 
+    /**
+    * @property {Phaser.Physics.Matter} matter - The MatterJS Physics system (coming soon).
+    */
+    this.matter = null;
+
     this.parseConfig();
 
 };
@@ -61617,6 +63058,12 @@ Phaser.Physics.BOX2D = 3;
 */
 Phaser.Physics.CHIPMUNK = 4;
 
+/**
+* @const
+* @type {number}
+*/
+Phaser.Physics.MATTERJS = 5;
+
 Phaser.Physics.prototype = {
 
     /**
@@ -61630,7 +63077,6 @@ Phaser.Physics.prototype = {
         {
             //  If Arcade isn't specified, we create it automatically if we can
             this.arcade = new Phaser.Physics.Arcade(this.game);
-            this.game.time.deltaCap = 0.2;
         }
 
         if (this.config.hasOwnProperty('ninja') && this.config['ninja'] === true && Phaser.Physics.hasOwnProperty('Ninja'))
@@ -61646,6 +63092,11 @@ Phaser.Physics.prototype = {
         if (this.config.hasOwnProperty('box2d') && this.config['box2d'] === true && Phaser.Physics.hasOwnProperty('BOX2D'))
         {
             this.box2d = new Phaser.Physics.BOX2D(this.game, this.config);
+        }
+
+        if (this.config.hasOwnProperty('matter') && this.config['matter'] === true && Phaser.Physics.hasOwnProperty('Matter'))
+        {
+            this.matter = new Phaser.Physics.Matter(this.game, this.config);
         }
 
     },
@@ -61702,6 +63153,17 @@ Phaser.Physics.prototype = {
                 this.box2d.reset();
             }
         }
+        else if (system === Phaser.Physics.MATTERJS)
+        {
+            if (this.matter === null)
+            {
+                this.matter = new Phaser.Physics.Matter(this.game, this.config);
+            }
+            else
+            {
+                this.matter.reset();
+            }
+        }
 
     },
 
@@ -61714,6 +63176,7 @@ Phaser.Physics.prototype = {
     * Phaser.Physics.P2JS - A full-body advanced physics system supporting multiple object shapes, polygon loading, contact materials, springs and constraints.
     * Phaser.Physics.NINJA - A port of Metanet Softwares N+ physics system. Advanced AABB and Circle vs. Tile collision.
     * Phaser.Physics.BOX2D - A port of https://code.google.com/p/box2d-html5
+    * Phaser.Physics.MATTER - A full-body and light-weight advanced physics system (still in development)
     * Phaser.Physics.CHIPMUNK is still in development.
     *
     * If you require more control over what type of body is created, for example to create a Ninja Physics Circle instead of the default AABB, then see the
@@ -61745,6 +63208,10 @@ Phaser.Physics.prototype = {
         {
             this.box2d.enable(object);
         }
+        else if (system === Phaser.Physics.MATTERJS && this.matter)
+        {
+            this.matter.enable(object);
+        }
 
     },
 
@@ -61768,6 +63235,11 @@ Phaser.Physics.prototype = {
             this.box2d.preUpdate();
         }
 
+        if (this.matter)
+        {
+            this.matter.preUpdate();
+        }
+
     },
 
     /**
@@ -61788,6 +63260,11 @@ Phaser.Physics.prototype = {
         if (this.box2d)
         {
             this.box2d.update();
+        }
+
+        if (this.matter)
+        {
+            this.matter.update();
         }
 
     },
@@ -61820,6 +63297,11 @@ Phaser.Physics.prototype = {
             this.box2d.setBoundsToWorld();
         }
 
+        if (this.matter)
+        {
+            this.matter.setBoundsToWorld();
+        }
+
     },
 
     /**
@@ -61838,6 +63320,11 @@ Phaser.Physics.prototype = {
         if (this.box2d)
         {
             this.box2d.clear();
+        }
+
+        if (this.matter)
+        {
+            this.matter.clear();
         }
 
     },
@@ -61860,6 +63347,11 @@ Phaser.Physics.prototype = {
             this.box2d.reset();
         }
 
+        if (this.matter)
+        {
+            this.matter.reset();
+        }
+
     },
 
     /**
@@ -61879,10 +63371,16 @@ Phaser.Physics.prototype = {
             this.box2d.destroy();
         }
 
+        if (this.matter)
+        {
+            this.matter.destroy();
+        }
+
         this.arcade = null;
         this.ninja = null;
         this.p2 = null;
         this.box2d = null;
+        this.matter = null;
 
     }
 
@@ -62107,7 +63605,10 @@ Phaser.Physics.Arcade.prototype = {
 
     /**
     * Creates an Arcade Physics body on the given game object.
+    * 
     * A game object can only have 1 physics body active at any one time, and it can't be changed until the body is nulled.
+    *
+    * When you add an Arcade Physics body to an object it will automatically add the object into its parent Groups hash array.
     *
     * @method Phaser.Physics.Arcade#enableBody
     * @param {object} object - The game object to create the physics body on. A body will only be created if this object has a null `body` property.
@@ -62117,6 +63618,11 @@ Phaser.Physics.Arcade.prototype = {
         if (object.hasOwnProperty('body') && object.body === null)
         {
             object.body = new Phaser.Physics.Arcade.Body(object);
+
+            if (object.parent && object.parent instanceof Phaser.Group)
+            {
+                object.parent.addToHash(object);
+            }
         }
 
     },
@@ -62170,7 +63676,6 @@ Phaser.Physics.Arcade.prototype = {
         }
         else if (drag)
         {
-            // var _drag = drag * this.game.time.physicsElapsed;
             drag *= this.game.time.physicsElapsed;
 
             if (velocity - drag > 0)
@@ -62317,71 +63822,132 @@ Phaser.Physics.Arcade.prototype = {
     },
 
     /**
-     * This method will sort a Groups _hash array based on the sortDirection property.
-     * 
-     * Each function should return -1 if `a > b`, 1 if `a < b` or 0 if `a === b`.
+     * A Sort function for sorting two bodies based on a LEFT to RIGHT sort direction.
+     *
+     * This is called automatically by World.sort
+     *
+     * @method sortLeftRight
+     * @param {Phaser.Sprite} a - The first Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @param {Phaser.Sprite} b - The second Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @return {integer} A negative value if `a > b`, a positive value if `a < b` or 0 if `a === b` or the bodies are invalid.
+     */
+    sortLeftRight: function (a, b) {
+
+        if (!a.body || !b.body)
+        {
+            return 0;
+        }
+
+        return a.body.x - b.body.x;
+
+    },
+
+    /**
+     * A Sort function for sorting two bodies based on a RIGHT to LEFT sort direction.
+     *
+     * This is called automatically by World.sort
+     *
+     * @method sortRightLeft
+     * @param {Phaser.Sprite} a - The first Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @param {Phaser.Sprite} b - The second Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @return {integer} A negative value if `a > b`, a positive value if `a < b` or 0 if `a === b` or the bodies are invalid.
+     */
+    sortRightLeft: function (a, b) {
+
+        if (!a.body || !b.body)
+        {
+            return 0;
+        }
+
+        return b.body.x - a.body.x;
+
+    },
+
+    /**
+     * A Sort function for sorting two bodies based on a TOP to BOTTOM sort direction.
+     *
+     * This is called automatically by World.sort
+     *
+     * @method sortTopBottom
+     * @param {Phaser.Sprite} a - The first Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @param {Phaser.Sprite} b - The second Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @return {integer} A negative value if `a > b`, a positive value if `a < b` or 0 if `a === b` or the bodies are invalid.
+     */
+    sortTopBottom: function (a, b) {
+
+        if (!a.body || !b.body)
+        {
+            return 0;
+        }
+
+        return a.body.y - b.body.y;
+
+    },
+
+    /**
+     * A Sort function for sorting two bodies based on a BOTTOM to TOP sort direction.
+     *
+     * This is called automatically by World.sort
+     *
+     * @method sortBottomTop
+     * @param {Phaser.Sprite} a - The first Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @param {Phaser.Sprite} b - The second Sprite to test. The Sprite must have an Arcade Physics Body.
+     * @return {integer} A negative value if `a > b`, a positive value if `a < b` or 0 if `a === b` or the bodies are invalid.
+     */
+    sortBottomTop: function (a, b) {
+
+        if (!a.body || !b.body)
+        {
+            return 0;
+        }
+
+        return b.body.y - a.body.y;
+
+    },
+
+    /**
+     * This method will sort a Groups hash array.
+     *
+     * If the Group has `physicsSortDirection` set it will use the sort direction defined.
+     *
+     * Otherwise if the sortDirection parameter is undefined, or Group.physicsSortDirection is null, it will use Phaser.Physics.Arcade.sortDirection.
+     *
+     * By changing Group.physicsSortDirection you can customise each Group to sort in a different order.
      *
      * @method sort
-     * @protected
      * @param {Phaser.Group} group - The Group to sort.
+     * @param {integer} [sortDirection] - The sort direction used to sort this Group.
      */
-    sort: function (group) {
+    sort: function (group, sortDirection) {
 
-        if (this.sortDirection === Phaser.Physics.Arcade.LEFT_RIGHT)
+        if (group.physicsSortDirection !== null)
+        {
+            sortDirection = group.physicsSortDirection;
+        }
+        else
+        {
+            if (typeof sortDirection === 'undefined') { sortDirection = this.sortDirection; }
+        }
+
+        if (sortDirection === Phaser.Physics.Arcade.LEFT_RIGHT)
         {
             //  Game world is say 2000x600 and you start at 0
-            group._hash.sort(function(a, b) {
-
-                if (!a.body || !b.body)
-                {
-                    return -1;
-                }
-
-                return a.body.x - b.body.x;
-
-            });
+            group.hash.sort(this.sortLeftRight);
         }
-        else if (this.sortDirection === Phaser.Physics.Arcade.RIGHT_LEFT)
+        else if (sortDirection === Phaser.Physics.Arcade.RIGHT_LEFT)
         {
             //  Game world is say 2000x600 and you start at 2000
-            group._hash.sort(function(a, b) {
-
-                if (!a.body || !b.body)
-                {
-                    return -1;
-                }
-
-                return b.body.x - a.body.x;
-
-            });
+            group.hash.sort(this.sortRightLeft);
         }
-        else if (this.sortDirection === Phaser.Physics.Arcade.TOP_BOTTOM)
+        else if (sortDirection === Phaser.Physics.Arcade.TOP_BOTTOM)
         {
             //  Game world is say 800x2000 and you start at 0
-            group._hash.sort(function(a, b) {
-
-                if (!a.body || !b.body)
-                {
-                    return -1;
-                }
-
-                return a.body.y - b.body.y;
-
-            });
+            group.hash.sort(this.sortTopBottom);
         }
-        else if (this.sortDirection === Phaser.Physics.Arcade.BOTTOM_TOP)
+        else if (sortDirection === Phaser.Physics.Arcade.BOTTOM_TOP)
         {
             //  Game world is say 800x2000 and you start at 2000
-            group._hash.sort(function(a, b) {
-
-                if (!a.body || !b.body)
-                {
-                    return -1;
-                }
-
-                return b.body.y - a.body.y;
-
-            });
+            group.hash.sort(this.sortBottomTop);
         }
 
     },
@@ -62528,63 +64094,67 @@ Phaser.Physics.Arcade.prototype = {
             return;
         }
 
+        var body;
+
         if (this.skipQuadTree || sprite.body.skipQuadTree)
         {
-            for (var i = 0; i < group._hash.length; i++)
+            for (var i = 0; i < group.hash.length; i++)
             {
                 //  Skip duff entries - we can't check a non-existent sprite or one with no body
-                if (!group._hash[i] || !group._hash[i].exists || !group._hash[i].body)
+                if (!group.hash[i] || !group.hash[i].exists || !group.hash[i].body)
                 {
                     continue;
                 }
 
+                body = group.hash[i].body;
+
                 //  Skip items either side of the sprite
                 if (this.sortDirection === Phaser.Physics.Arcade.LEFT_RIGHT)
                 {
-                    if (sprite.body.right < group._hash[i].body.x)
+                    if (sprite.body.right < body.x)
                     {
                         break;
                     }
-                    else if (group._hash[i].body.right < sprite.body.x)
+                    else if (body.right < sprite.body.x)
                     {
                         continue;
                     }
                 }
                 else if (this.sortDirection === Phaser.Physics.Arcade.RIGHT_LEFT)
                 {
-                    if (sprite.body.x > group._hash[i].body.right)
+                    if (sprite.body.x > body.right)
                     {
                         break;
                     }
-                    else if (group._hash[i].body.x > sprite.body.right)
+                    else if (body.x > sprite.body.right)
                     {
                         continue;
                     }
                 }
                 else if (this.sortDirection === Phaser.Physics.Arcade.TOP_BOTTOM)
                 {
-                    if (sprite.body.bottom < group._hash[i].body.y)
+                    if (sprite.body.bottom < body.y)
                     {
                         break;
                     }
-                    else if (group._hash[i].body.bottom < sprite.body.y)
+                    else if (body.bottom < sprite.body.y)
                     {
                         continue;
                     }
                 }
                 else if (this.sortDirection === Phaser.Physics.Arcade.BOTTOM_TOP)
                 {
-                    if (sprite.body.y > group._hash[i].body.bottom)
+                    if (sprite.body.y > body.bottom)
                     {
                         break;
                     }
-                    else if (group._hash[i].body.y > sprite.body.bottom)
+                    else if (body.y > sprite.body.bottom)
                     {
                         continue;
                     }
                 }
                 
-                this.collideSpriteVsSprite(sprite, group._hash[i], collideCallback, processCallback, callbackContext, overlapOnly);
+                this.collideSpriteVsSprite(sprite, group.hash[i], collideCallback, processCallback, callbackContext, overlapOnly);
             }
         }
         else
@@ -62634,25 +64204,25 @@ Phaser.Physics.Arcade.prototype = {
             return;
         }
 
-        for (var i = 0; i < group._hash.length; i++)
+        for (var i = 0; i < group.hash.length; i++)
         {
             //  Skip duff entries - we can't check a non-existent sprite or one with no body
-            if (!group._hash[i] || !group._hash[i].exists || !group._hash[i].body)
+            if (!group.hash[i] || !group.hash[i].exists || !group.hash[i].body)
             {
                 continue;
             }
 
-            var object1 = group._hash[i];
+            var object1 = group.hash[i];
 
-            for (var j = i + 1; j < group._hash.length; j++)
+            for (var j = i + 1; j < group.hash.length; j++)
             {
                 //  Skip duff entries - we can't check a non-existent sprite or one with no body
-                if (!group._hash[j] || !group._hash[j].exists || !group._hash[j].body)
+                if (!group.hash[j] || !group.hash[j].exists || !group.hash[j].body)
                 {
                     continue;
                 }
 
-                var object2 = group._hash[j];
+                var object2 = group.hash[j];
 
                 //  Skip items either side of the sprite
                 if (this.sortDirection === Phaser.Physics.Arcade.LEFT_RIGHT)
@@ -63842,6 +65412,16 @@ Phaser.Physics.Arcade.Body = function (sprite) {
     this.skipQuadTree = false;
 
     /**
+    * If true the Body will check itself against the Sprite.getBounds() dimensions and adjust its width and height accordingly.
+    * If false it will compare its dimensions against the Sprite scale instead, and adjust its width height if the scale has changed.
+    * Typically you would need to enable syncBounds if your sprite is the child of a responsive display object such as a FlexLayer, 
+    * or in any situation where the Sprite scale doesn't change, but its parents scale is effecting the dimensions regardless.
+    * @property {boolean} syncBounds
+    * @default
+    */
+    this.syncBounds = false;
+
+    /**
     * @property {boolean} _reset - Internal cache var.
     * @private
     */
@@ -63883,20 +65463,38 @@ Phaser.Physics.Arcade.Body.prototype = {
     */
     updateBounds: function () {
 
-        var asx = Math.abs(this.sprite.scale.x);
-        var asy = Math.abs(this.sprite.scale.y);
-
-        if (asx !== this._sx || asy !== this._sy)
+        if (this.syncBounds)
         {
-            this.width = this.sourceWidth * asx;
-            this.height = this.sourceHeight * asy;
+            var b = this.sprite.getBounds();
+            b.ceilAll();
+
+            if (b.width !== this.width || b.height !== this.height)
+            {
+                this.width = b.width;
+                this.height = b.height;
+                this._reset = true;
+            }
+        }
+        else
+        {
+            var asx = Math.abs(this.sprite.scale.x);
+            var asy = Math.abs(this.sprite.scale.y);
+
+            if (asx !== this._sx || asy !== this._sy)
+            {
+                this.width = this.sourceWidth * asx;
+                this.height = this.sourceHeight * asy;
+                this._sx = asx;
+                this._sy = asy;
+                this._reset = true;
+            }
+        }
+
+        if (this._reset)
+        {
             this.halfWidth = Math.floor(this.width / 2);
             this.halfHeight = Math.floor(this.height / 2);
-            this._sx = asx;
-            this._sy = asy;
             this.center.setTo(this.position.x + this.halfWidth, this.position.y + this.halfHeight);
-
-            this._reset = true;
         }
 
     },
@@ -64067,6 +65665,11 @@ Phaser.Physics.Arcade.Body.prototype = {
     * @method Phaser.Physics.Arcade.Body#destroy
     */
     destroy: function () {
+
+        if (this.sprite.parent && this.sprite.parent instanceof Phaser.Group)
+        {
+            this.sprite.parent.removeFromHash(this.sprite);
+        }
 
         this.sprite.body = null;
         this.sprite = null;
@@ -64764,6 +66367,19471 @@ Phaser.Physics.Arcade.TilemapCollision.prototype = {
 
 //  Merge this with the Arcade Physics prototype
 Phaser.Utils.mixinPrototype(Phaser.Physics.Arcade.prototype, Phaser.Physics.Arcade.TilemapCollision.prototype);
+
+/**
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2015 p2.js authors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+!function(e){if("object"==typeof exports)module.exports=e();else if("function"==typeof define&&false)define(e);else{var f;"undefined"!=typeof window?f=window:"undefined"!=typeof global?f=global:"undefined"!=typeof self&&(f=self),f.p2=e()}}(function(){var define,module,exports;return (function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);throw new Error("Cannot find module '"+o+"'")}var f=n[o]={exports:{}};t[o][0].call(f.exports,function(e){var n=t[o][1][e];return s(n?n:e)},f,f.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+/*!
+ * The buffer module from node.js, for the browser.
+ *
+ * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
+ * @license  MIT
+ */
+
+var base64 = _dereq_('base64-js')
+var ieee754 = _dereq_('ieee754')
+
+exports.Buffer = Buffer
+exports.SlowBuffer = Buffer
+exports.INSPECT_MAX_BYTES = 50
+Buffer.poolSize = 8192
+
+/**
+ * If `Buffer._useTypedArrays`:
+ *   === true    Use Uint8Array implementation (fastest)
+ *   === false   Use Object implementation (compatible down to IE6)
+ */
+Buffer._useTypedArrays = (function () {
+  // Detect if browser supports Typed Arrays. Supported browsers are IE 10+, Firefox 4+,
+  // Chrome 7+, Safari 5.1+, Opera 11.6+, iOS 4.2+. If the browser does not support adding
+  // properties to `Uint8Array` instances, then that's the same as no `Uint8Array` support
+  // because we need to be able to add all the node Buffer API methods. This is an issue
+  // in Firefox 4-29. Now fixed: https://bugzilla.mozilla.org/show_bug.cgi?id=695438
+  try {
+    var buf = new ArrayBuffer(0)
+    var arr = new Uint8Array(buf)
+    arr.foo = function () { return 42 }
+    return 42 === arr.foo() &&
+        typeof arr.subarray === 'function' // Chrome 9-10 lack `subarray`
+  } catch (e) {
+    return false
+  }
+})()
+
+/**
+ * Class: Buffer
+ * =============
+ *
+ * The Buffer constructor returns instances of `Uint8Array` that are augmented
+ * with function properties for all the node `Buffer` API functions. We use
+ * `Uint8Array` so that square bracket notation works as expected -- it returns
+ * a single octet.
+ *
+ * By augmenting the instances, we can avoid modifying the `Uint8Array`
+ * prototype.
+ */
+function Buffer (subject, encoding, noZero) {
+  if (!(this instanceof Buffer))
+    return new Buffer(subject, encoding, noZero)
+
+  var type = typeof subject
+
+  // Workaround: node's base64 implementation allows for non-padded strings
+  // while base64-js does not.
+  if (encoding === 'base64' && type === 'string') {
+    subject = stringtrim(subject)
+    while (subject.length % 4 !== 0) {
+      subject = subject + '='
+    }
+  }
+
+  // Find the length
+  var length
+  if (type === 'number')
+    length = coerce(subject)
+  else if (type === 'string')
+    length = Buffer.byteLength(subject, encoding)
+  else if (type === 'object')
+    length = coerce(subject.length) // assume that object is array-like
+  else
+    throw new Error('First argument needs to be a number, array or string.')
+
+  var buf
+  if (Buffer._useTypedArrays) {
+    // Preferred: Return an augmented `Uint8Array` instance for best performance
+    buf = Buffer._augment(new Uint8Array(length))
+  } else {
+    // Fallback: Return THIS instance of Buffer (created by `new`)
+    buf = this
+    buf.length = length
+    buf._isBuffer = true
+  }
+
+  var i
+  if (Buffer._useTypedArrays && typeof subject.byteLength === 'number') {
+    // Speed optimization -- use set if we're copying from a typed array
+    buf._set(subject)
+  } else if (isArrayish(subject)) {
+    // Treat array-ish objects as a byte array
+    for (i = 0; i < length; i++) {
+      if (Buffer.isBuffer(subject))
+        buf[i] = subject.readUInt8(i)
+      else
+        buf[i] = subject[i]
+    }
+  } else if (type === 'string') {
+    buf.write(subject, 0, encoding)
+  } else if (type === 'number' && !Buffer._useTypedArrays && !noZero) {
+    for (i = 0; i < length; i++) {
+      buf[i] = 0
+    }
+  }
+
+  return buf
+}
+
+// STATIC METHODS
+// ==============
+
+Buffer.isEncoding = function (encoding) {
+  switch (String(encoding).toLowerCase()) {
+    case 'hex':
+    case 'utf8':
+    case 'utf-8':
+    case 'ascii':
+    case 'binary':
+    case 'base64':
+    case 'raw':
+    case 'ucs2':
+    case 'ucs-2':
+    case 'utf16le':
+    case 'utf-16le':
+      return true
+    default:
+      return false
+  }
+}
+
+Buffer.isBuffer = function (b) {
+  return !!(b !== null && b !== undefined && b._isBuffer)
+}
+
+Buffer.byteLength = function (str, encoding) {
+  var ret
+  str = str + ''
+  switch (encoding || 'utf8') {
+    case 'hex':
+      ret = str.length / 2
+      break
+    case 'utf8':
+    case 'utf-8':
+      ret = utf8ToBytes(str).length
+      break
+    case 'ascii':
+    case 'binary':
+    case 'raw':
+      ret = str.length
+      break
+    case 'base64':
+      ret = base64ToBytes(str).length
+      break
+    case 'ucs2':
+    case 'ucs-2':
+    case 'utf16le':
+    case 'utf-16le':
+      ret = str.length * 2
+      break
+    default:
+      throw new Error('Unknown encoding')
+  }
+  return ret
+}
+
+Buffer.concat = function (list, totalLength) {
+  assert(isArray(list), 'Usage: Buffer.concat(list, [totalLength])\n' +
+      'list should be an Array.')
+
+  if (list.length === 0) {
+    return new Buffer(0)
+  } else if (list.length === 1) {
+    return list[0]
+  }
+
+  var i
+  if (typeof totalLength !== 'number') {
+    totalLength = 0
+    for (i = 0; i < list.length; i++) {
+      totalLength += list[i].length
+    }
+  }
+
+  var buf = new Buffer(totalLength)
+  var pos = 0
+  for (i = 0; i < list.length; i++) {
+    var item = list[i]
+    item.copy(buf, pos)
+    pos += item.length
+  }
+  return buf
+}
+
+// BUFFER INSTANCE METHODS
+// =======================
+
+function _hexWrite (buf, string, offset, length) {
+  offset = Number(offset) || 0
+  var remaining = buf.length - offset
+  if (!length) {
+    length = remaining
+  } else {
+    length = Number(length)
+    if (length > remaining) {
+      length = remaining
+    }
+  }
+
+  // must be an even number of digits
+  var strLen = string.length
+  assert(strLen % 2 === 0, 'Invalid hex string')
+
+  if (length > strLen / 2) {
+    length = strLen / 2
+  }
+  for (var i = 0; i < length; i++) {
+    var byte = parseInt(string.substr(i * 2, 2), 16)
+    assert(!isNaN(byte), 'Invalid hex string')
+    buf[offset + i] = byte
+  }
+  Buffer._charsWritten = i * 2
+  return i
+}
+
+function _utf8Write (buf, string, offset, length) {
+  var charsWritten = Buffer._charsWritten =
+    blitBuffer(utf8ToBytes(string), buf, offset, length)
+  return charsWritten
+}
+
+function _asciiWrite (buf, string, offset, length) {
+  var charsWritten = Buffer._charsWritten =
+    blitBuffer(asciiToBytes(string), buf, offset, length)
+  return charsWritten
+}
+
+function _binaryWrite (buf, string, offset, length) {
+  return _asciiWrite(buf, string, offset, length)
+}
+
+function _base64Write (buf, string, offset, length) {
+  var charsWritten = Buffer._charsWritten =
+    blitBuffer(base64ToBytes(string), buf, offset, length)
+  return charsWritten
+}
+
+function _utf16leWrite (buf, string, offset, length) {
+  var charsWritten = Buffer._charsWritten =
+    blitBuffer(utf16leToBytes(string), buf, offset, length)
+  return charsWritten
+}
+
+Buffer.prototype.write = function (string, offset, length, encoding) {
+  // Support both (string, offset, length, encoding)
+  // and the legacy (string, encoding, offset, length)
+  if (isFinite(offset)) {
+    if (!isFinite(length)) {
+      encoding = length
+      length = undefined
+    }
+  } else {  // legacy
+    var swap = encoding
+    encoding = offset
+    offset = length
+    length = swap
+  }
+
+  offset = Number(offset) || 0
+  var remaining = this.length - offset
+  if (!length) {
+    length = remaining
+  } else {
+    length = Number(length)
+    if (length > remaining) {
+      length = remaining
+    }
+  }
+  encoding = String(encoding || 'utf8').toLowerCase()
+
+  var ret
+  switch (encoding) {
+    case 'hex':
+      ret = _hexWrite(this, string, offset, length)
+      break
+    case 'utf8':
+    case 'utf-8':
+      ret = _utf8Write(this, string, offset, length)
+      break
+    case 'ascii':
+      ret = _asciiWrite(this, string, offset, length)
+      break
+    case 'binary':
+      ret = _binaryWrite(this, string, offset, length)
+      break
+    case 'base64':
+      ret = _base64Write(this, string, offset, length)
+      break
+    case 'ucs2':
+    case 'ucs-2':
+    case 'utf16le':
+    case 'utf-16le':
+      ret = _utf16leWrite(this, string, offset, length)
+      break
+    default:
+      throw new Error('Unknown encoding')
+  }
+  return ret
+}
+
+Buffer.prototype.toString = function (encoding, start, end) {
+  var self = this
+
+  encoding = String(encoding || 'utf8').toLowerCase()
+  start = Number(start) || 0
+  end = (end !== undefined)
+    ? Number(end)
+    : end = self.length
+
+  // Fastpath empty strings
+  if (end === start)
+    return ''
+
+  var ret
+  switch (encoding) {
+    case 'hex':
+      ret = _hexSlice(self, start, end)
+      break
+    case 'utf8':
+    case 'utf-8':
+      ret = _utf8Slice(self, start, end)
+      break
+    case 'ascii':
+      ret = _asciiSlice(self, start, end)
+      break
+    case 'binary':
+      ret = _binarySlice(self, start, end)
+      break
+    case 'base64':
+      ret = _base64Slice(self, start, end)
+      break
+    case 'ucs2':
+    case 'ucs-2':
+    case 'utf16le':
+    case 'utf-16le':
+      ret = _utf16leSlice(self, start, end)
+      break
+    default:
+      throw new Error('Unknown encoding')
+  }
+  return ret
+}
+
+Buffer.prototype.toJSON = function () {
+  return {
+    type: 'Buffer',
+    data: Array.prototype.slice.call(this._arr || this, 0)
+  }
+}
+
+// copy(targetBuffer, targetStart=0, sourceStart=0, sourceEnd=buffer.length)
+Buffer.prototype.copy = function (target, target_start, start, end) {
+  var source = this
+
+  if (!start) start = 0
+  if (!end && end !== 0) end = this.length
+  if (!target_start) target_start = 0
+
+  // Copy 0 bytes; we're done
+  if (end === start) return
+  if (target.length === 0 || source.length === 0) return
+
+  // Fatal error conditions
+  assert(end >= start, 'sourceEnd < sourceStart')
+  assert(target_start >= 0 && target_start < target.length,
+      'targetStart out of bounds')
+  assert(start >= 0 && start < source.length, 'sourceStart out of bounds')
+  assert(end >= 0 && end <= source.length, 'sourceEnd out of bounds')
+
+  // Are we oob?
+  if (end > this.length)
+    end = this.length
+  if (target.length - target_start < end - start)
+    end = target.length - target_start + start
+
+  var len = end - start
+
+  if (len < 100 || !Buffer._useTypedArrays) {
+    for (var i = 0; i < len; i++)
+      target[i + target_start] = this[i + start]
+  } else {
+    target._set(this.subarray(start, start + len), target_start)
+  }
+}
+
+function _base64Slice (buf, start, end) {
+  if (start === 0 && end === buf.length) {
+    return base64.fromByteArray(buf)
+  } else {
+    return base64.fromByteArray(buf.slice(start, end))
+  }
+}
+
+function _utf8Slice (buf, start, end) {
+  var res = ''
+  var tmp = ''
+  end = Math.min(buf.length, end)
+
+  for (var i = start; i < end; i++) {
+    if (buf[i] <= 0x7F) {
+      res += decodeUtf8Char(tmp) + String.fromCharCode(buf[i])
+      tmp = ''
+    } else {
+      tmp += '%' + buf[i].toString(16)
+    }
+  }
+
+  return res + decodeUtf8Char(tmp)
+}
+
+function _asciiSlice (buf, start, end) {
+  var ret = ''
+  end = Math.min(buf.length, end)
+
+  for (var i = start; i < end; i++)
+    ret += String.fromCharCode(buf[i])
+  return ret
+}
+
+function _binarySlice (buf, start, end) {
+  return _asciiSlice(buf, start, end)
+}
+
+function _hexSlice (buf, start, end) {
+  var len = buf.length
+
+  if (!start || start < 0) start = 0
+  if (!end || end < 0 || end > len) end = len
+
+  var out = ''
+  for (var i = start; i < end; i++) {
+    out += toHex(buf[i])
+  }
+  return out
+}
+
+function _utf16leSlice (buf, start, end) {
+  var bytes = buf.slice(start, end)
+  var res = ''
+  for (var i = 0; i < bytes.length; i += 2) {
+    res += String.fromCharCode(bytes[i] + bytes[i+1] * 256)
+  }
+  return res
+}
+
+Buffer.prototype.slice = function (start, end) {
+  var len = this.length
+  start = clamp(start, len, 0)
+  end = clamp(end, len, len)
+
+  if (Buffer._useTypedArrays) {
+    return Buffer._augment(this.subarray(start, end))
+  } else {
+    var sliceLen = end - start
+    var newBuf = new Buffer(sliceLen, undefined, true)
+    for (var i = 0; i < sliceLen; i++) {
+      newBuf[i] = this[i + start]
+    }
+    return newBuf
+  }
+}
+
+// `get` will be removed in Node 0.13+
+Buffer.prototype.get = function (offset) {
+  console.log('.get() is deprecated. Access using array indexes instead.')
+  return this.readUInt8(offset)
+}
+
+// `set` will be removed in Node 0.13+
+Buffer.prototype.set = function (v, offset) {
+  console.log('.set() is deprecated. Access using array indexes instead.')
+  return this.writeUInt8(v, offset)
+}
+
+Buffer.prototype.readUInt8 = function (offset, noAssert) {
+  if (!noAssert) {
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset < this.length, 'Trying to read beyond buffer length')
+  }
+
+  if (offset >= this.length)
+    return
+
+  return this[offset]
+}
+
+function _readUInt16 (buf, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 1 < buf.length, 'Trying to read beyond buffer length')
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  var val
+  if (littleEndian) {
+    val = buf[offset]
+    if (offset + 1 < len)
+      val |= buf[offset + 1] << 8
+  } else {
+    val = buf[offset] << 8
+    if (offset + 1 < len)
+      val |= buf[offset + 1]
+  }
+  return val
+}
+
+Buffer.prototype.readUInt16LE = function (offset, noAssert) {
+  return _readUInt16(this, offset, true, noAssert)
+}
+
+Buffer.prototype.readUInt16BE = function (offset, noAssert) {
+  return _readUInt16(this, offset, false, noAssert)
+}
+
+function _readUInt32 (buf, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 3 < buf.length, 'Trying to read beyond buffer length')
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  var val
+  if (littleEndian) {
+    if (offset + 2 < len)
+      val = buf[offset + 2] << 16
+    if (offset + 1 < len)
+      val |= buf[offset + 1] << 8
+    val |= buf[offset]
+    if (offset + 3 < len)
+      val = val + (buf[offset + 3] << 24 >>> 0)
+  } else {
+    if (offset + 1 < len)
+      val = buf[offset + 1] << 16
+    if (offset + 2 < len)
+      val |= buf[offset + 2] << 8
+    if (offset + 3 < len)
+      val |= buf[offset + 3]
+    val = val + (buf[offset] << 24 >>> 0)
+  }
+  return val
+}
+
+Buffer.prototype.readUInt32LE = function (offset, noAssert) {
+  return _readUInt32(this, offset, true, noAssert)
+}
+
+Buffer.prototype.readUInt32BE = function (offset, noAssert) {
+  return _readUInt32(this, offset, false, noAssert)
+}
+
+Buffer.prototype.readInt8 = function (offset, noAssert) {
+  if (!noAssert) {
+    assert(offset !== undefined && offset !== null,
+        'missing offset')
+    assert(offset < this.length, 'Trying to read beyond buffer length')
+  }
+
+  if (offset >= this.length)
+    return
+
+  var neg = this[offset] & 0x80
+  if (neg)
+    return (0xff - this[offset] + 1) * -1
+  else
+    return this[offset]
+}
+
+function _readInt16 (buf, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 1 < buf.length, 'Trying to read beyond buffer length')
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  var val = _readUInt16(buf, offset, littleEndian, true)
+  var neg = val & 0x8000
+  if (neg)
+    return (0xffff - val + 1) * -1
+  else
+    return val
+}
+
+Buffer.prototype.readInt16LE = function (offset, noAssert) {
+  return _readInt16(this, offset, true, noAssert)
+}
+
+Buffer.prototype.readInt16BE = function (offset, noAssert) {
+  return _readInt16(this, offset, false, noAssert)
+}
+
+function _readInt32 (buf, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 3 < buf.length, 'Trying to read beyond buffer length')
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  var val = _readUInt32(buf, offset, littleEndian, true)
+  var neg = val & 0x80000000
+  if (neg)
+    return (0xffffffff - val + 1) * -1
+  else
+    return val
+}
+
+Buffer.prototype.readInt32LE = function (offset, noAssert) {
+  return _readInt32(this, offset, true, noAssert)
+}
+
+Buffer.prototype.readInt32BE = function (offset, noAssert) {
+  return _readInt32(this, offset, false, noAssert)
+}
+
+function _readFloat (buf, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset + 3 < buf.length, 'Trying to read beyond buffer length')
+  }
+
+  return ieee754.read(buf, offset, littleEndian, 23, 4)
+}
+
+Buffer.prototype.readFloatLE = function (offset, noAssert) {
+  return _readFloat(this, offset, true, noAssert)
+}
+
+Buffer.prototype.readFloatBE = function (offset, noAssert) {
+  return _readFloat(this, offset, false, noAssert)
+}
+
+function _readDouble (buf, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset + 7 < buf.length, 'Trying to read beyond buffer length')
+  }
+
+  return ieee754.read(buf, offset, littleEndian, 52, 8)
+}
+
+Buffer.prototype.readDoubleLE = function (offset, noAssert) {
+  return _readDouble(this, offset, true, noAssert)
+}
+
+Buffer.prototype.readDoubleBE = function (offset, noAssert) {
+  return _readDouble(this, offset, false, noAssert)
+}
+
+Buffer.prototype.writeUInt8 = function (value, offset, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset < this.length, 'trying to write beyond buffer length')
+    verifuint(value, 0xff)
+  }
+
+  if (offset >= this.length) return
+
+  this[offset] = value
+}
+
+function _writeUInt16 (buf, value, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 1 < buf.length, 'trying to write beyond buffer length')
+    verifuint(value, 0xffff)
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  for (var i = 0, j = Math.min(len - offset, 2); i < j; i++) {
+    buf[offset + i] =
+        (value & (0xff << (8 * (littleEndian ? i : 1 - i)))) >>>
+            (littleEndian ? i : 1 - i) * 8
+  }
+}
+
+Buffer.prototype.writeUInt16LE = function (value, offset, noAssert) {
+  _writeUInt16(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeUInt16BE = function (value, offset, noAssert) {
+  _writeUInt16(this, value, offset, false, noAssert)
+}
+
+function _writeUInt32 (buf, value, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 3 < buf.length, 'trying to write beyond buffer length')
+    verifuint(value, 0xffffffff)
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  for (var i = 0, j = Math.min(len - offset, 4); i < j; i++) {
+    buf[offset + i] =
+        (value >>> (littleEndian ? i : 3 - i) * 8) & 0xff
+  }
+}
+
+Buffer.prototype.writeUInt32LE = function (value, offset, noAssert) {
+  _writeUInt32(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeUInt32BE = function (value, offset, noAssert) {
+  _writeUInt32(this, value, offset, false, noAssert)
+}
+
+Buffer.prototype.writeInt8 = function (value, offset, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset < this.length, 'Trying to write beyond buffer length')
+    verifsint(value, 0x7f, -0x80)
+  }
+
+  if (offset >= this.length)
+    return
+
+  if (value >= 0)
+    this.writeUInt8(value, offset, noAssert)
+  else
+    this.writeUInt8(0xff + value + 1, offset, noAssert)
+}
+
+function _writeInt16 (buf, value, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 1 < buf.length, 'Trying to write beyond buffer length')
+    verifsint(value, 0x7fff, -0x8000)
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  if (value >= 0)
+    _writeUInt16(buf, value, offset, littleEndian, noAssert)
+  else
+    _writeUInt16(buf, 0xffff + value + 1, offset, littleEndian, noAssert)
+}
+
+Buffer.prototype.writeInt16LE = function (value, offset, noAssert) {
+  _writeInt16(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeInt16BE = function (value, offset, noAssert) {
+  _writeInt16(this, value, offset, false, noAssert)
+}
+
+function _writeInt32 (buf, value, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 3 < buf.length, 'Trying to write beyond buffer length')
+    verifsint(value, 0x7fffffff, -0x80000000)
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  if (value >= 0)
+    _writeUInt32(buf, value, offset, littleEndian, noAssert)
+  else
+    _writeUInt32(buf, 0xffffffff + value + 1, offset, littleEndian, noAssert)
+}
+
+Buffer.prototype.writeInt32LE = function (value, offset, noAssert) {
+  _writeInt32(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeInt32BE = function (value, offset, noAssert) {
+  _writeInt32(this, value, offset, false, noAssert)
+}
+
+function _writeFloat (buf, value, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 3 < buf.length, 'Trying to write beyond buffer length')
+    verifIEEE754(value, 3.4028234663852886e+38, -3.4028234663852886e+38)
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  ieee754.write(buf, value, offset, littleEndian, 23, 4)
+}
+
+Buffer.prototype.writeFloatLE = function (value, offset, noAssert) {
+  _writeFloat(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeFloatBE = function (value, offset, noAssert) {
+  _writeFloat(this, value, offset, false, noAssert)
+}
+
+function _writeDouble (buf, value, offset, littleEndian, noAssert) {
+  if (!noAssert) {
+    assert(value !== undefined && value !== null, 'missing value')
+    assert(typeof littleEndian === 'boolean', 'missing or invalid endian')
+    assert(offset !== undefined && offset !== null, 'missing offset')
+    assert(offset + 7 < buf.length,
+        'Trying to write beyond buffer length')
+    verifIEEE754(value, 1.7976931348623157E+308, -1.7976931348623157E+308)
+  }
+
+  var len = buf.length
+  if (offset >= len)
+    return
+
+  ieee754.write(buf, value, offset, littleEndian, 52, 8)
+}
+
+Buffer.prototype.writeDoubleLE = function (value, offset, noAssert) {
+  _writeDouble(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeDoubleBE = function (value, offset, noAssert) {
+  _writeDouble(this, value, offset, false, noAssert)
+}
+
+// fill(value, start=0, end=buffer.length)
+Buffer.prototype.fill = function (value, start, end) {
+  if (!value) value = 0
+  if (!start) start = 0
+  if (!end) end = this.length
+
+  if (typeof value === 'string') {
+    value = value.charCodeAt(0)
+  }
+
+  assert(typeof value === 'number' && !isNaN(value), 'value is not a number')
+  assert(end >= start, 'end < start')
+
+  // Fill 0 bytes; we're done
+  if (end === start) return
+  if (this.length === 0) return
+
+  assert(start >= 0 && start < this.length, 'start out of bounds')
+  assert(end >= 0 && end <= this.length, 'end out of bounds')
+
+  for (var i = start; i < end; i++) {
+    this[i] = value
+  }
+}
+
+Buffer.prototype.inspect = function () {
+  var out = []
+  var len = this.length
+  for (var i = 0; i < len; i++) {
+    out[i] = toHex(this[i])
+    if (i === exports.INSPECT_MAX_BYTES) {
+      out[i + 1] = '...'
+      break
+    }
+  }
+  return '<Buffer ' + out.join(' ') + '>'
+}
+
+/**
+ * Creates a new `ArrayBuffer` with the *copied* memory of the buffer instance.
+ * Added in Node 0.12. Only available in browsers that support ArrayBuffer.
+ */
+Buffer.prototype.toArrayBuffer = function () {
+  if (typeof Uint8Array !== 'undefined') {
+    if (Buffer._useTypedArrays) {
+      return (new Buffer(this)).buffer
+    } else {
+      var buf = new Uint8Array(this.length)
+      for (var i = 0, len = buf.length; i < len; i += 1)
+        buf[i] = this[i]
+      return buf.buffer
+    }
+  } else {
+    throw new Error('Buffer.toArrayBuffer not supported in this browser')
+  }
+}
+
+// HELPER FUNCTIONS
+// ================
+
+function stringtrim (str) {
+  if (str.trim) return str.trim()
+  return str.replace(/^\s+|\s+$/g, '')
+}
+
+var BP = Buffer.prototype
+
+/**
+ * Augment a Uint8Array *instance* (not the Uint8Array class!) with Buffer methods
+ */
+Buffer._augment = function (arr) {
+  arr._isBuffer = true
+
+  // save reference to original Uint8Array get/set methods before overwriting
+  arr._get = arr.get
+  arr._set = arr.set
+
+  // deprecated, will be removed in node 0.13+
+  arr.get = BP.get
+  arr.set = BP.set
+
+  arr.write = BP.write
+  arr.toString = BP.toString
+  arr.toLocaleString = BP.toString
+  arr.toJSON = BP.toJSON
+  arr.copy = BP.copy
+  arr.slice = BP.slice
+  arr.readUInt8 = BP.readUInt8
+  arr.readUInt16LE = BP.readUInt16LE
+  arr.readUInt16BE = BP.readUInt16BE
+  arr.readUInt32LE = BP.readUInt32LE
+  arr.readUInt32BE = BP.readUInt32BE
+  arr.readInt8 = BP.readInt8
+  arr.readInt16LE = BP.readInt16LE
+  arr.readInt16BE = BP.readInt16BE
+  arr.readInt32LE = BP.readInt32LE
+  arr.readInt32BE = BP.readInt32BE
+  arr.readFloatLE = BP.readFloatLE
+  arr.readFloatBE = BP.readFloatBE
+  arr.readDoubleLE = BP.readDoubleLE
+  arr.readDoubleBE = BP.readDoubleBE
+  arr.writeUInt8 = BP.writeUInt8
+  arr.writeUInt16LE = BP.writeUInt16LE
+  arr.writeUInt16BE = BP.writeUInt16BE
+  arr.writeUInt32LE = BP.writeUInt32LE
+  arr.writeUInt32BE = BP.writeUInt32BE
+  arr.writeInt8 = BP.writeInt8
+  arr.writeInt16LE = BP.writeInt16LE
+  arr.writeInt16BE = BP.writeInt16BE
+  arr.writeInt32LE = BP.writeInt32LE
+  arr.writeInt32BE = BP.writeInt32BE
+  arr.writeFloatLE = BP.writeFloatLE
+  arr.writeFloatBE = BP.writeFloatBE
+  arr.writeDoubleLE = BP.writeDoubleLE
+  arr.writeDoubleBE = BP.writeDoubleBE
+  arr.fill = BP.fill
+  arr.inspect = BP.inspect
+  arr.toArrayBuffer = BP.toArrayBuffer
+
+  return arr
+}
+
+// slice(start, end)
+function clamp (index, len, defaultValue) {
+  if (typeof index !== 'number') return defaultValue
+  index = ~~index;  // Coerce to integer.
+  if (index >= len) return len
+  if (index >= 0) return index
+  index += len
+  if (index >= 0) return index
+  return 0
+}
+
+function coerce (length) {
+  // Coerce length to a number (possibly NaN), round up
+  // in case it's fractional (e.g. 123.456) then do a
+  // double negate to coerce a NaN to 0. Easy, right?
+  length = ~~Math.ceil(+length)
+  return length < 0 ? 0 : length
+}
+
+function isArray (subject) {
+  return (Array.isArray || function (subject) {
+    return Object.prototype.toString.call(subject) === '[object Array]'
+  })(subject)
+}
+
+function isArrayish (subject) {
+  return isArray(subject) || Buffer.isBuffer(subject) ||
+      subject && typeof subject === 'object' &&
+      typeof subject.length === 'number'
+}
+
+function toHex (n) {
+  if (n < 16) return '0' + n.toString(16)
+  return n.toString(16)
+}
+
+function utf8ToBytes (str) {
+  var byteArray = []
+  for (var i = 0; i < str.length; i++) {
+    var b = str.charCodeAt(i)
+    if (b <= 0x7F)
+      byteArray.push(str.charCodeAt(i))
+    else {
+      var start = i
+      if (b >= 0xD800 && b <= 0xDFFF) i++
+      var h = encodeURIComponent(str.slice(start, i+1)).substr(1).split('%')
+      for (var j = 0; j < h.length; j++)
+        byteArray.push(parseInt(h[j], 16))
+    }
+  }
+  return byteArray
+}
+
+function asciiToBytes (str) {
+  var byteArray = []
+  for (var i = 0; i < str.length; i++) {
+    // Node's code seems to be doing this and not & 0x7F..
+    byteArray.push(str.charCodeAt(i) & 0xFF)
+  }
+  return byteArray
+}
+
+function utf16leToBytes (str) {
+  var c, hi, lo
+  var byteArray = []
+  for (var i = 0; i < str.length; i++) {
+    c = str.charCodeAt(i)
+    hi = c >> 8
+    lo = c % 256
+    byteArray.push(lo)
+    byteArray.push(hi)
+  }
+
+  return byteArray
+}
+
+function base64ToBytes (str) {
+  return base64.toByteArray(str)
+}
+
+function blitBuffer (src, dst, offset, length) {
+  var pos
+  for (var i = 0; i < length; i++) {
+    if ((i + offset >= dst.length) || (i >= src.length))
+      break
+    dst[i + offset] = src[i]
+  }
+  return i
+}
+
+function decodeUtf8Char (str) {
+  try {
+    return decodeURIComponent(str)
+  } catch (err) {
+    return String.fromCharCode(0xFFFD) // UTF 8 invalid char
+  }
+}
+
+/*
+ * We have to make sure that the value is a valid integer. This means that it
+ * is non-negative. It has no fractional component and that it does not
+ * exceed the maximum allowed value.
+ */
+function verifuint (value, max) {
+  assert(typeof value === 'number', 'cannot write a non-number as a number')
+  assert(value >= 0, 'specified a negative value for writing an unsigned value')
+  assert(value <= max, 'value is larger than maximum value for type')
+  assert(Math.floor(value) === value, 'value has a fractional component')
+}
+
+function verifsint (value, max, min) {
+  assert(typeof value === 'number', 'cannot write a non-number as a number')
+  assert(value <= max, 'value larger than maximum allowed value')
+  assert(value >= min, 'value smaller than minimum allowed value')
+  assert(Math.floor(value) === value, 'value has a fractional component')
+}
+
+function verifIEEE754 (value, max, min) {
+  assert(typeof value === 'number', 'cannot write a non-number as a number')
+  assert(value <= max, 'value larger than maximum allowed value')
+  assert(value >= min, 'value smaller than minimum allowed value')
+}
+
+function assert (test, message) {
+  if (!test) throw new Error(message || 'Failed assertion')
+}
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\browserify\\node_modules\\buffer\\index.js","/..\\node_modules\\browserify\\node_modules\\buffer")
+},{"Zbi7gb":4,"base64-js":2,"buffer":1,"ieee754":3}],2:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+;(function (exports) {
+	'use strict';
+
+  var Arr = (typeof Uint8Array !== 'undefined')
+    ? Uint8Array
+    : Array
+
+	var PLUS   = '+'.charCodeAt(0)
+	var SLASH  = '/'.charCodeAt(0)
+	var NUMBER = '0'.charCodeAt(0)
+	var LOWER  = 'a'.charCodeAt(0)
+	var UPPER  = 'A'.charCodeAt(0)
+	var PLUS_URL_SAFE = '-'.charCodeAt(0)
+	var SLASH_URL_SAFE = '_'.charCodeAt(0)
+
+	function decode (elt) {
+		var code = elt.charCodeAt(0)
+		if (code === PLUS ||
+		    code === PLUS_URL_SAFE)
+			return 62 // '+'
+		if (code === SLASH ||
+		    code === SLASH_URL_SAFE)
+			return 63 // '/'
+		if (code < NUMBER)
+			return -1 //no match
+		if (code < NUMBER + 10)
+			return code - NUMBER + 26 + 26
+		if (code < UPPER + 26)
+			return code - UPPER
+		if (code < LOWER + 26)
+			return code - LOWER + 26
+	}
+
+	function b64ToByteArray (b64) {
+		var i, j, l, tmp, placeHolders, arr
+
+		if (b64.length % 4 > 0) {
+			throw new Error('Invalid string. Length must be a multiple of 4')
+		}
+
+		// the number of equal signs (place holders)
+		// if there are two placeholders, than the two characters before it
+		// represent one byte
+		// if there is only one, then the three characters before it represent 2 bytes
+		// this is just a cheap hack to not do indexOf twice
+		var len = b64.length
+		placeHolders = '=' === b64.charAt(len - 2) ? 2 : '=' === b64.charAt(len - 1) ? 1 : 0
+
+		// base64 is 4/3 + up to two characters of the original data
+		arr = new Arr(b64.length * 3 / 4 - placeHolders)
+
+		// if there are placeholders, only get up to the last complete 4 chars
+		l = placeHolders > 0 ? b64.length - 4 : b64.length
+
+		var L = 0
+
+		function push (v) {
+			arr[L++] = v
+		}
+
+		for (i = 0, j = 0; i < l; i += 4, j += 3) {
+			tmp = (decode(b64.charAt(i)) << 18) | (decode(b64.charAt(i + 1)) << 12) | (decode(b64.charAt(i + 2)) << 6) | decode(b64.charAt(i + 3))
+			push((tmp & 0xFF0000) >> 16)
+			push((tmp & 0xFF00) >> 8)
+			push(tmp & 0xFF)
+		}
+
+		if (placeHolders === 2) {
+			tmp = (decode(b64.charAt(i)) << 2) | (decode(b64.charAt(i + 1)) >> 4)
+			push(tmp & 0xFF)
+		} else if (placeHolders === 1) {
+			tmp = (decode(b64.charAt(i)) << 10) | (decode(b64.charAt(i + 1)) << 4) | (decode(b64.charAt(i + 2)) >> 2)
+			push((tmp >> 8) & 0xFF)
+			push(tmp & 0xFF)
+		}
+
+		return arr
+	}
+
+	function uint8ToBase64 (uint8) {
+		var i,
+			extraBytes = uint8.length % 3, // if we have 1 byte left, pad 2 bytes
+			output = "",
+			temp, length
+
+		function encode (num) {
+			return lookup.charAt(num)
+		}
+
+		function tripletToBase64 (num) {
+			return encode(num >> 18 & 0x3F) + encode(num >> 12 & 0x3F) + encode(num >> 6 & 0x3F) + encode(num & 0x3F)
+		}
+
+		// go through the array every three bytes, we'll deal with trailing stuff later
+		for (i = 0, length = uint8.length - extraBytes; i < length; i += 3) {
+			temp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2])
+			output += tripletToBase64(temp)
+		}
+
+		// pad the end with zeros, but make sure to not forget the extra bytes
+		switch (extraBytes) {
+			case 1:
+				temp = uint8[uint8.length - 1]
+				output += encode(temp >> 2)
+				output += encode((temp << 4) & 0x3F)
+				output += '=='
+				break
+			case 2:
+				temp = (uint8[uint8.length - 2] << 8) + (uint8[uint8.length - 1])
+				output += encode(temp >> 10)
+				output += encode((temp >> 4) & 0x3F)
+				output += encode((temp << 2) & 0x3F)
+				output += '='
+				break
+		}
+
+		return output
+	}
+
+	exports.toByteArray = b64ToByteArray
+	exports.fromByteArray = uint8ToBase64
+}(typeof exports === 'undefined' ? (this.base64js = {}) : exports))
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\browserify\\node_modules\\buffer\\node_modules\\base64-js\\lib\\b64.js","/..\\node_modules\\browserify\\node_modules\\buffer\\node_modules\\base64-js\\lib")
+},{"Zbi7gb":4,"buffer":1}],3:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+exports.read = function(buffer, offset, isLE, mLen, nBytes) {
+  var e, m,
+      eLen = nBytes * 8 - mLen - 1,
+      eMax = (1 << eLen) - 1,
+      eBias = eMax >> 1,
+      nBits = -7,
+      i = isLE ? (nBytes - 1) : 0,
+      d = isLE ? -1 : 1,
+      s = buffer[offset + i];
+
+  i += d;
+
+  e = s & ((1 << (-nBits)) - 1);
+  s >>= (-nBits);
+  nBits += eLen;
+  for (; nBits > 0; e = e * 256 + buffer[offset + i], i += d, nBits -= 8);
+
+  m = e & ((1 << (-nBits)) - 1);
+  e >>= (-nBits);
+  nBits += mLen;
+  for (; nBits > 0; m = m * 256 + buffer[offset + i], i += d, nBits -= 8);
+
+  if (e === 0) {
+    e = 1 - eBias;
+  } else if (e === eMax) {
+    return m ? NaN : ((s ? -1 : 1) * Infinity);
+  } else {
+    m = m + Math.pow(2, mLen);
+    e = e - eBias;
+  }
+  return (s ? -1 : 1) * m * Math.pow(2, e - mLen);
+};
+
+exports.write = function(buffer, value, offset, isLE, mLen, nBytes) {
+  var e, m, c,
+      eLen = nBytes * 8 - mLen - 1,
+      eMax = (1 << eLen) - 1,
+      eBias = eMax >> 1,
+      rt = (mLen === 23 ? Math.pow(2, -24) - Math.pow(2, -77) : 0),
+      i = isLE ? 0 : (nBytes - 1),
+      d = isLE ? 1 : -1,
+      s = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0;
+
+  value = Math.abs(value);
+
+  if (isNaN(value) || value === Infinity) {
+    m = isNaN(value) ? 1 : 0;
+    e = eMax;
+  } else {
+    e = Math.floor(Math.log(value) / Math.LN2);
+    if (value * (c = Math.pow(2, -e)) < 1) {
+      e--;
+      c *= 2;
+    }
+    if (e + eBias >= 1) {
+      value += rt / c;
+    } else {
+      value += rt * Math.pow(2, 1 - eBias);
+    }
+    if (value * c >= 2) {
+      e++;
+      c /= 2;
+    }
+
+    if (e + eBias >= eMax) {
+      m = 0;
+      e = eMax;
+    } else if (e + eBias >= 1) {
+      m = (value * c - 1) * Math.pow(2, mLen);
+      e = e + eBias;
+    } else {
+      m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen);
+      e = 0;
+    }
+  }
+
+  for (; mLen >= 8; buffer[offset + i] = m & 0xff, i += d, m /= 256, mLen -= 8);
+
+  e = (e << mLen) | m;
+  eLen += mLen;
+  for (; eLen > 0; buffer[offset + i] = e & 0xff, i += d, e /= 256, eLen -= 8);
+
+  buffer[offset + i - d] |= s * 128;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\browserify\\node_modules\\buffer\\node_modules\\ieee754\\index.js","/..\\node_modules\\browserify\\node_modules\\buffer\\node_modules\\ieee754")
+},{"Zbi7gb":4,"buffer":1}],4:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+// shim for using process in browser
+
+var process = module.exports = {};
+
+process.nextTick = (function () {
+    var canSetImmediate = typeof window !== 'undefined'
+    && window.setImmediate;
+    var canPost = typeof window !== 'undefined'
+    && window.postMessage && window.addEventListener
+    ;
+
+    if (canSetImmediate) {
+        return function (f) { return window.setImmediate(f) };
+    }
+
+    if (canPost) {
+        var queue = [];
+        window.addEventListener('message', function (ev) {
+            var source = ev.source;
+            if ((source === window || source === null) && ev.data === 'process-tick') {
+                ev.stopPropagation();
+                if (queue.length > 0) {
+                    var fn = queue.shift();
+                    fn();
+                }
+            }
+        }, true);
+
+        return function nextTick(fn) {
+            queue.push(fn);
+            window.postMessage('process-tick', '*');
+        };
+    }
+
+    return function nextTick(fn) {
+        setTimeout(fn, 0);
+    };
+})();
+
+process.title = 'browser';
+process.browser = true;
+process.env = {};
+process.argv = [];
+
+function noop() {}
+
+process.on = noop;
+process.addListener = noop;
+process.once = noop;
+process.off = noop;
+process.removeListener = noop;
+process.removeAllListeners = noop;
+process.emit = noop;
+
+process.binding = function (name) {
+    throw new Error('process.binding is not supported');
+}
+
+// TODO(shtylman)
+process.cwd = function () { return '/' };
+process.chdir = function (dir) {
+    throw new Error('process.chdir is not supported');
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\browserify\\node_modules\\process\\browser.js","/..\\node_modules\\browserify\\node_modules\\process")
+},{"Zbi7gb":4,"buffer":1}],5:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Scalar = _dereq_('./Scalar');
+
+module.exports = Line;
+
+/**
+ * Container for line-related functions
+ * @class Line
+ */
+function Line(){};
+
+/**
+ * Compute the intersection between two lines.
+ * @static
+ * @method lineInt
+ * @param  {Array}  l1          Line vector 1
+ * @param  {Array}  l2          Line vector 2
+ * @param  {Number} precision   Precision to use when checking if the lines are parallel
+ * @return {Array}              The intersection point.
+ */
+Line.lineInt = function(l1,l2,precision){
+    precision = precision || 0;
+    var i = [0,0]; // point
+    var a1, b1, c1, a2, b2, c2, det; // scalars
+    a1 = l1[1][1] - l1[0][1];
+    b1 = l1[0][0] - l1[1][0];
+    c1 = a1 * l1[0][0] + b1 * l1[0][1];
+    a2 = l2[1][1] - l2[0][1];
+    b2 = l2[0][0] - l2[1][0];
+    c2 = a2 * l2[0][0] + b2 * l2[0][1];
+    det = a1 * b2 - a2*b1;
+    if (!Scalar.eq(det, 0, precision)) { // lines are not parallel
+        i[0] = (b2 * c1 - b1 * c2) / det;
+        i[1] = (a1 * c2 - a2 * c1) / det;
+    }
+    return i;
+};
+
+/**
+ * Checks if two line segments intersects.
+ * @method segmentsIntersect
+ * @param {Array} p1 The start vertex of the first line segment.
+ * @param {Array} p2 The end vertex of the first line segment.
+ * @param {Array} q1 The start vertex of the second line segment.
+ * @param {Array} q2 The end vertex of the second line segment.
+ * @return {Boolean} True if the two line segments intersect
+ */
+Line.segmentsIntersect = function(p1, p2, q1, q2){
+   var dx = p2[0] - p1[0];
+   var dy = p2[1] - p1[1];
+   var da = q2[0] - q1[0];
+   var db = q2[1] - q1[1];
+
+   // segments are parallel
+   if(da*dy - db*dx == 0)
+      return false;
+
+   var s = (dx * (q1[1] - p1[1]) + dy * (p1[0] - q1[0])) / (da * dy - db * dx)
+   var t = (da * (p1[1] - q1[1]) + db * (q1[0] - p1[0])) / (db * dx - da * dy)
+
+   return (s>=0 && s<=1 && t>=0 && t<=1);
+};
+
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\poly-decomp\\src\\Line.js","/..\\node_modules\\poly-decomp\\src")
+},{"./Scalar":8,"Zbi7gb":4,"buffer":1}],6:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = Point;
+
+/**
+ * Point related functions
+ * @class Point
+ */
+function Point(){};
+
+/**
+ * Get the area of a triangle spanned by the three given points. Note that the area will be negative if the points are not given in counter-clockwise order.
+ * @static
+ * @method area
+ * @param  {Array} a
+ * @param  {Array} b
+ * @param  {Array} c
+ * @return {Number}
+ */
+Point.area = function(a,b,c){
+    return (((b[0] - a[0])*(c[1] - a[1]))-((c[0] - a[0])*(b[1] - a[1])));
+};
+
+Point.left = function(a,b,c){
+    return Point.area(a,b,c) > 0;
+};
+
+Point.leftOn = function(a,b,c) {
+    return Point.area(a, b, c) >= 0;
+};
+
+Point.right = function(a,b,c) {
+    return Point.area(a, b, c) < 0;
+};
+
+Point.rightOn = function(a,b,c) {
+    return Point.area(a, b, c) <= 0;
+};
+
+var tmpPoint1 = [],
+    tmpPoint2 = [];
+
+/**
+ * Check if three points are collinear
+ * @method collinear
+ * @param  {Array} a
+ * @param  {Array} b
+ * @param  {Array} c
+ * @param  {Number} [thresholdAngle=0] Threshold angle to use when comparing the vectors. The function will return true if the angle between the resulting vectors is less than this value. Use zero for max precision.
+ * @return {Boolean}
+ */
+Point.collinear = function(a,b,c,thresholdAngle) {
+    if(!thresholdAngle)
+        return Point.area(a, b, c) == 0;
+    else {
+        var ab = tmpPoint1,
+            bc = tmpPoint2;
+
+        ab[0] = b[0]-a[0];
+        ab[1] = b[1]-a[1];
+        bc[0] = c[0]-b[0];
+        bc[1] = c[1]-b[1];
+
+        var dot = ab[0]*bc[0] + ab[1]*bc[1],
+            magA = Math.sqrt(ab[0]*ab[0] + ab[1]*ab[1]),
+            magB = Math.sqrt(bc[0]*bc[0] + bc[1]*bc[1]),
+            angle = Math.acos(dot/(magA*magB));
+        return angle < thresholdAngle;
+    }
+};
+
+Point.sqdist = function(a,b){
+    var dx = b[0] - a[0];
+    var dy = b[1] - a[1];
+    return dx * dx + dy * dy;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\poly-decomp\\src\\Point.js","/..\\node_modules\\poly-decomp\\src")
+},{"Zbi7gb":4,"buffer":1}],7:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Line = _dereq_("./Line")
+,   Point = _dereq_("./Point")
+,   Scalar = _dereq_("./Scalar")
+
+module.exports = Polygon;
+
+/**
+ * Polygon class.
+ * @class Polygon
+ * @constructor
+ */
+function Polygon(){
+
+    /**
+     * Vertices that this polygon consists of. An array of array of numbers, example: [[0,0],[1,0],..]
+     * @property vertices
+     * @type {Array}
+     */
+    this.vertices = [];
+}
+
+/**
+ * Get a vertex at position i. It does not matter if i is out of bounds, this function will just cycle.
+ * @method at
+ * @param  {Number} i
+ * @return {Array}
+ */
+Polygon.prototype.at = function(i){
+    var v = this.vertices,
+        s = v.length;
+    return v[i < 0 ? i % s + s : i % s];
+};
+
+/**
+ * Get first vertex
+ * @method first
+ * @return {Array}
+ */
+Polygon.prototype.first = function(){
+    return this.vertices[0];
+};
+
+/**
+ * Get last vertex
+ * @method last
+ * @return {Array}
+ */
+Polygon.prototype.last = function(){
+    return this.vertices[this.vertices.length-1];
+};
+
+/**
+ * Clear the polygon data
+ * @method clear
+ * @return {Array}
+ */
+Polygon.prototype.clear = function(){
+    this.vertices.length = 0;
+};
+
+/**
+ * Append points "from" to "to"-1 from an other polygon "poly" onto this one.
+ * @method append
+ * @param {Polygon} poly The polygon to get points from.
+ * @param {Number}  from The vertex index in "poly".
+ * @param {Number}  to The end vertex index in "poly". Note that this vertex is NOT included when appending.
+ * @return {Array}
+ */
+Polygon.prototype.append = function(poly,from,to){
+    if(typeof(from) == "undefined") throw new Error("From is not given!");
+    if(typeof(to) == "undefined")   throw new Error("To is not given!");
+
+    if(to-1 < from)                 throw new Error("lol1");
+    if(to > poly.vertices.length)   throw new Error("lol2");
+    if(from < 0)                    throw new Error("lol3");
+
+    for(var i=from; i<to; i++){
+        this.vertices.push(poly.vertices[i]);
+    }
+};
+
+/**
+ * Make sure that the polygon vertices are ordered counter-clockwise.
+ * @method makeCCW
+ */
+Polygon.prototype.makeCCW = function(){
+    var br = 0,
+        v = this.vertices;
+
+    // find bottom right point
+    for (var i = 1; i < this.vertices.length; ++i) {
+        if (v[i][1] < v[br][1] || (v[i][1] == v[br][1] && v[i][0] > v[br][0])) {
+            br = i;
+        }
+    }
+
+    // reverse poly if clockwise
+    if (!Point.left(this.at(br - 1), this.at(br), this.at(br + 1))) {
+        this.reverse();
+    }
+};
+
+/**
+ * Reverse the vertices in the polygon
+ * @method reverse
+ */
+Polygon.prototype.reverse = function(){
+    var tmp = [];
+    for(var i=0, N=this.vertices.length; i!==N; i++){
+        tmp.push(this.vertices.pop());
+    }
+    this.vertices = tmp;
+};
+
+/**
+ * Check if a point in the polygon is a reflex point
+ * @method isReflex
+ * @param  {Number}  i
+ * @return {Boolean}
+ */
+Polygon.prototype.isReflex = function(i){
+    return Point.right(this.at(i - 1), this.at(i), this.at(i + 1));
+};
+
+var tmpLine1=[],
+    tmpLine2=[];
+
+/**
+ * Check if two vertices in the polygon can see each other
+ * @method canSee
+ * @param  {Number} a Vertex index 1
+ * @param  {Number} b Vertex index 2
+ * @return {Boolean}
+ */
+Polygon.prototype.canSee = function(a,b) {
+    var p, dist, l1=tmpLine1, l2=tmpLine2;
+
+    if (Point.leftOn(this.at(a + 1), this.at(a), this.at(b)) && Point.rightOn(this.at(a - 1), this.at(a), this.at(b))) {
+        return false;
+    }
+    dist = Point.sqdist(this.at(a), this.at(b));
+    for (var i = 0; i !== this.vertices.length; ++i) { // for each edge
+        if ((i + 1) % this.vertices.length === a || i === a) // ignore incident edges
+            continue;
+        if (Point.leftOn(this.at(a), this.at(b), this.at(i + 1)) && Point.rightOn(this.at(a), this.at(b), this.at(i))) { // if diag intersects an edge
+            l1[0] = this.at(a);
+            l1[1] = this.at(b);
+            l2[0] = this.at(i);
+            l2[1] = this.at(i + 1);
+            p = Line.lineInt(l1,l2);
+            if (Point.sqdist(this.at(a), p) < dist) { // if edge is blocking visibility to b
+                return false;
+            }
+        }
+    }
+
+    return true;
+};
+
+/**
+ * Copy the polygon from vertex i to vertex j.
+ * @method copy
+ * @param  {Number} i
+ * @param  {Number} j
+ * @param  {Polygon} [targetPoly]   Optional target polygon to save in.
+ * @return {Polygon}                The resulting copy.
+ */
+Polygon.prototype.copy = function(i,j,targetPoly){
+    var p = targetPoly || new Polygon();
+    p.clear();
+    if (i < j) {
+        // Insert all vertices from i to j
+        for(var k=i; k<=j; k++)
+            p.vertices.push(this.vertices[k]);
+
+    } else {
+
+        // Insert vertices 0 to j
+        for(var k=0; k<=j; k++)
+            p.vertices.push(this.vertices[k]);
+
+        // Insert vertices i to end
+        for(var k=i; k<this.vertices.length; k++)
+            p.vertices.push(this.vertices[k]);
+    }
+
+    return p;
+};
+
+/**
+ * Decomposes the polygon into convex pieces. Returns a list of edges [[p1,p2],[p2,p3],...] that cuts the polygon.
+ * Note that this algorithm has complexity O(N^4) and will be very slow for polygons with many vertices.
+ * @method getCutEdges
+ * @return {Array}
+ */
+Polygon.prototype.getCutEdges = function() {
+    var min=[], tmp1=[], tmp2=[], tmpPoly = new Polygon();
+    var nDiags = Number.MAX_VALUE;
+
+    for (var i = 0; i < this.vertices.length; ++i) {
+        if (this.isReflex(i)) {
+            for (var j = 0; j < this.vertices.length; ++j) {
+                if (this.canSee(i, j)) {
+                    tmp1 = this.copy(i, j, tmpPoly).getCutEdges();
+                    tmp2 = this.copy(j, i, tmpPoly).getCutEdges();
+
+                    for(var k=0; k<tmp2.length; k++)
+                        tmp1.push(tmp2[k]);
+
+                    if (tmp1.length < nDiags) {
+                        min = tmp1;
+                        nDiags = tmp1.length;
+                        min.push([this.at(i), this.at(j)]);
+                    }
+                }
+            }
+        }
+    }
+
+    return min;
+};
+
+/**
+ * Decomposes the polygon into one or more convex sub-Polygons.
+ * @method decomp
+ * @return {Array} An array or Polygon objects.
+ */
+Polygon.prototype.decomp = function(){
+    var edges = this.getCutEdges();
+    if(edges.length > 0)
+        return this.slice(edges);
+    else
+        return [this];
+};
+
+/**
+ * Slices the polygon given one or more cut edges. If given one, this function will return two polygons (false on failure). If many, an array of polygons.
+ * @method slice
+ * @param {Array} cutEdges A list of edges, as returned by .getCutEdges()
+ * @return {Array}
+ */
+Polygon.prototype.slice = function(cutEdges){
+    if(cutEdges.length == 0) return [this];
+    if(cutEdges instanceof Array && cutEdges.length && cutEdges[0] instanceof Array && cutEdges[0].length==2 && cutEdges[0][0] instanceof Array){
+
+        var polys = [this];
+
+        for(var i=0; i<cutEdges.length; i++){
+            var cutEdge = cutEdges[i];
+            // Cut all polys
+            for(var j=0; j<polys.length; j++){
+                var poly = polys[j];
+                var result = poly.slice(cutEdge);
+                if(result){
+                    // Found poly! Cut and quit
+                    polys.splice(j,1);
+                    polys.push(result[0],result[1]);
+                    break;
+                }
+            }
+        }
+
+        return polys;
+    } else {
+
+        // Was given one edge
+        var cutEdge = cutEdges;
+        var i = this.vertices.indexOf(cutEdge[0]);
+        var j = this.vertices.indexOf(cutEdge[1]);
+
+        if(i != -1 && j != -1){
+            return [this.copy(i,j),
+                    this.copy(j,i)];
+        } else {
+            return false;
+        }
+    }
+};
+
+/**
+ * Checks that the line segments of this polygon do not intersect each other.
+ * @method isSimple
+ * @param  {Array} path An array of vertices e.g. [[0,0],[0,1],...]
+ * @return {Boolean}
+ * @todo Should it check all segments with all others?
+ */
+Polygon.prototype.isSimple = function(){
+    var path = this.vertices;
+    // Check
+    for(var i=0; i<path.length-1; i++){
+        for(var j=0; j<i-1; j++){
+            if(Line.segmentsIntersect(path[i], path[i+1], path[j], path[j+1] )){
+                return false;
+            }
+        }
+    }
+
+    // Check the segment between the last and the first point to all others
+    for(var i=1; i<path.length-2; i++){
+        if(Line.segmentsIntersect(path[0], path[path.length-1], path[i], path[i+1] )){
+            return false;
+        }
+    }
+
+    return true;
+};
+
+function getIntersectionPoint(p1, p2, q1, q2, delta){
+    delta = delta || 0;
+   var a1 = p2[1] - p1[1];
+   var b1 = p1[0] - p2[0];
+   var c1 = (a1 * p1[0]) + (b1 * p1[1]);
+   var a2 = q2[1] - q1[1];
+   var b2 = q1[0] - q2[0];
+   var c2 = (a2 * q1[0]) + (b2 * q1[1]);
+   var det = (a1 * b2) - (a2 * b1);
+
+   if(!Scalar.eq(det,0,delta))
+      return [((b2 * c1) - (b1 * c2)) / det, ((a1 * c2) - (a2 * c1)) / det]
+   else
+      return [0,0]
+}
+
+/**
+ * Quickly decompose the Polygon into convex sub-polygons.
+ * @method quickDecomp
+ * @param  {Array} result
+ * @param  {Array} [reflexVertices]
+ * @param  {Array} [steinerPoints]
+ * @param  {Number} [delta]
+ * @param  {Number} [maxlevel]
+ * @param  {Number} [level]
+ * @return {Array}
+ */
+Polygon.prototype.quickDecomp = function(result,reflexVertices,steinerPoints,delta,maxlevel,level){
+    maxlevel = maxlevel || 100;
+    level = level || 0;
+    delta = delta || 25;
+    result = typeof(result)!="undefined" ? result : [];
+    reflexVertices = reflexVertices || [];
+    steinerPoints = steinerPoints || [];
+
+    var upperInt=[0,0], lowerInt=[0,0], p=[0,0]; // Points
+    var upperDist=0, lowerDist=0, d=0, closestDist=0; // scalars
+    var upperIndex=0, lowerIndex=0, closestIndex=0; // Integers
+    var lowerPoly=new Polygon(), upperPoly=new Polygon(); // polygons
+    var poly = this,
+        v = this.vertices;
+
+    if(v.length < 3) return result;
+
+    level++;
+    if(level > maxlevel){
+        console.warn("quickDecomp: max level ("+maxlevel+") reached.");
+        return result;
+    }
+
+    for (var i = 0; i < this.vertices.length; ++i) {
+        if (poly.isReflex(i)) {
+            reflexVertices.push(poly.vertices[i]);
+            upperDist = lowerDist = Number.MAX_VALUE;
+
+
+            for (var j = 0; j < this.vertices.length; ++j) {
+                if (Point.left(poly.at(i - 1), poly.at(i), poly.at(j))
+                        && Point.rightOn(poly.at(i - 1), poly.at(i), poly.at(j - 1))) { // if line intersects with an edge
+                    p = getIntersectionPoint(poly.at(i - 1), poly.at(i), poly.at(j), poly.at(j - 1)); // find the point of intersection
+                    if (Point.right(poly.at(i + 1), poly.at(i), p)) { // make sure it's inside the poly
+                        d = Point.sqdist(poly.vertices[i], p);
+                        if (d < lowerDist) { // keep only the closest intersection
+                            lowerDist = d;
+                            lowerInt = p;
+                            lowerIndex = j;
+                        }
+                    }
+                }
+                if (Point.left(poly.at(i + 1), poly.at(i), poly.at(j + 1))
+                        && Point.rightOn(poly.at(i + 1), poly.at(i), poly.at(j))) {
+                    p = getIntersectionPoint(poly.at(i + 1), poly.at(i), poly.at(j), poly.at(j + 1));
+                    if (Point.left(poly.at(i - 1), poly.at(i), p)) {
+                        d = Point.sqdist(poly.vertices[i], p);
+                        if (d < upperDist) {
+                            upperDist = d;
+                            upperInt = p;
+                            upperIndex = j;
+                        }
+                    }
+                }
+            }
+
+            // if there are no vertices to connect to, choose a point in the middle
+            if (lowerIndex == (upperIndex + 1) % this.vertices.length) {
+                //console.log("Case 1: Vertex("+i+"), lowerIndex("+lowerIndex+"), upperIndex("+upperIndex+"), poly.size("+this.vertices.length+")");
+                p[0] = (lowerInt[0] + upperInt[0]) / 2;
+                p[1] = (lowerInt[1] + upperInt[1]) / 2;
+                steinerPoints.push(p);
+
+                if (i < upperIndex) {
+                    //lowerPoly.insert(lowerPoly.end(), poly.begin() + i, poly.begin() + upperIndex + 1);
+                    lowerPoly.append(poly, i, upperIndex+1);
+                    lowerPoly.vertices.push(p);
+                    upperPoly.vertices.push(p);
+                    if (lowerIndex != 0){
+                        //upperPoly.insert(upperPoly.end(), poly.begin() + lowerIndex, poly.end());
+                        upperPoly.append(poly,lowerIndex,poly.vertices.length);
+                    }
+                    //upperPoly.insert(upperPoly.end(), poly.begin(), poly.begin() + i + 1);
+                    upperPoly.append(poly,0,i+1);
+                } else {
+                    if (i != 0){
+                        //lowerPoly.insert(lowerPoly.end(), poly.begin() + i, poly.end());
+                        lowerPoly.append(poly,i,poly.vertices.length);
+                    }
+                    //lowerPoly.insert(lowerPoly.end(), poly.begin(), poly.begin() + upperIndex + 1);
+                    lowerPoly.append(poly,0,upperIndex+1);
+                    lowerPoly.vertices.push(p);
+                    upperPoly.vertices.push(p);
+                    //upperPoly.insert(upperPoly.end(), poly.begin() + lowerIndex, poly.begin() + i + 1);
+                    upperPoly.append(poly,lowerIndex,i+1);
+                }
+            } else {
+                // connect to the closest point within the triangle
+                //console.log("Case 2: Vertex("+i+"), closestIndex("+closestIndex+"), poly.size("+this.vertices.length+")\n");
+
+                if (lowerIndex > upperIndex) {
+                    upperIndex += this.vertices.length;
+                }
+                closestDist = Number.MAX_VALUE;
+
+                if(upperIndex < lowerIndex){
+                    return result;
+                }
+
+                for (var j = lowerIndex; j <= upperIndex; ++j) {
+                    if (Point.leftOn(poly.at(i - 1), poly.at(i), poly.at(j))
+                            && Point.rightOn(poly.at(i + 1), poly.at(i), poly.at(j))) {
+                        d = Point.sqdist(poly.at(i), poly.at(j));
+                        if (d < closestDist) {
+                            closestDist = d;
+                            closestIndex = j % this.vertices.length;
+                        }
+                    }
+                }
+
+                if (i < closestIndex) {
+                    lowerPoly.append(poly,i,closestIndex+1);
+                    if (closestIndex != 0){
+                        upperPoly.append(poly,closestIndex,v.length);
+                    }
+                    upperPoly.append(poly,0,i+1);
+                } else {
+                    if (i != 0){
+                        lowerPoly.append(poly,i,v.length);
+                    }
+                    lowerPoly.append(poly,0,closestIndex+1);
+                    upperPoly.append(poly,closestIndex,i+1);
+                }
+            }
+
+            // solve smallest poly first
+            if (lowerPoly.vertices.length < upperPoly.vertices.length) {
+                lowerPoly.quickDecomp(result,reflexVertices,steinerPoints,delta,maxlevel,level);
+                upperPoly.quickDecomp(result,reflexVertices,steinerPoints,delta,maxlevel,level);
+            } else {
+                upperPoly.quickDecomp(result,reflexVertices,steinerPoints,delta,maxlevel,level);
+                lowerPoly.quickDecomp(result,reflexVertices,steinerPoints,delta,maxlevel,level);
+            }
+
+            return result;
+        }
+    }
+    result.push(this);
+
+    return result;
+};
+
+/**
+ * Remove collinear points in the polygon.
+ * @method removeCollinearPoints
+ * @param  {Number} [precision] The threshold angle to use when determining whether two edges are collinear. Use zero for finest precision.
+ * @return {Number}           The number of points removed
+ */
+Polygon.prototype.removeCollinearPoints = function(precision){
+    var num = 0;
+    for(var i=this.vertices.length-1; this.vertices.length>3 && i>=0; --i){
+        if(Point.collinear(this.at(i-1),this.at(i),this.at(i+1),precision)){
+            // Remove the middle point
+            this.vertices.splice(i%this.vertices.length,1);
+            i--; // Jump one point forward. Otherwise we may get a chain removal
+            num++;
+        }
+    }
+    return num;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\poly-decomp\\src\\Polygon.js","/..\\node_modules\\poly-decomp\\src")
+},{"./Line":5,"./Point":6,"./Scalar":8,"Zbi7gb":4,"buffer":1}],8:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = Scalar;
+
+/**
+ * Scalar functions
+ * @class Scalar
+ */
+function Scalar(){}
+
+/**
+ * Check if two scalars are equal
+ * @static
+ * @method eq
+ * @param  {Number} a
+ * @param  {Number} b
+ * @param  {Number} [precision]
+ * @return {Boolean}
+ */
+Scalar.eq = function(a,b,precision){
+    precision = precision || 0;
+    return Math.abs(a-b) < precision;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\poly-decomp\\src\\Scalar.js","/..\\node_modules\\poly-decomp\\src")
+},{"Zbi7gb":4,"buffer":1}],9:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = {
+    Polygon : _dereq_("./Polygon"),
+    Point : _dereq_("./Point"),
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/..\\node_modules\\poly-decomp\\src\\index.js","/..\\node_modules\\poly-decomp\\src")
+},{"./Point":6,"./Polygon":7,"Zbi7gb":4,"buffer":1}],10:[function(_dereq_,module,exports){
+module.exports={
+  "name": "p2",
+  "version": "0.6.1",
+  "description": "A JavaScript 2D physics engine.",
+  "author": "Stefan Hedman <schteppe@gmail.com> (http://steffe.se)",
+  "keywords": [
+    "p2.js",
+    "p2",
+    "physics",
+    "engine",
+    "2d"
+  ],
+  "main": "./src/p2.js",
+  "engines": {
+    "node": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/schteppe/p2.js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/schteppe/p2.js/issues"
+  },
+  "licenses": [
+    {
+      "type": "MIT"
+    }
+  ],
+  "devDependencies": {
+    "grunt": "~0.4.0",
+    "grunt-contrib-jshint": "~0.9.2",
+    "grunt-contrib-nodeunit": "~0.1.2",
+    "grunt-contrib-uglify": "~0.4.0",
+    "grunt-contrib-watch": "~0.5.0",
+    "grunt-browserify": "~2.0.1",
+    "grunt-contrib-concat": "^0.4.0"
+  },
+  "dependencies": {
+    "poly-decomp": "0.1.0"
+  }
+}
+
+},{}],11:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2')
+,   Utils = _dereq_('../utils/Utils');
+
+module.exports = AABB;
+
+/**
+ * Axis aligned bounding box class.
+ * @class AABB
+ * @constructor
+ * @param {Object}  [options]
+ * @param {Array}   [options.upperBound]
+ * @param {Array}   [options.lowerBound]
+ */
+function AABB(options){
+
+    /**
+     * The lower bound of the bounding box.
+     * @property lowerBound
+     * @type {Array}
+     */
+    this.lowerBound = vec2.create();
+    if(options && options.lowerBound){
+        vec2.copy(this.lowerBound, options.lowerBound);
+    }
+
+    /**
+     * The upper bound of the bounding box.
+     * @property upperBound
+     * @type {Array}
+     */
+    this.upperBound = vec2.create();
+    if(options && options.upperBound){
+        vec2.copy(this.upperBound, options.upperBound);
+    }
+}
+
+var tmp = vec2.create();
+
+/**
+ * Set the AABB bounds from a set of points.
+ * @method setFromPoints
+ * @param {Array} points An array of vec2's.
+ */
+AABB.prototype.setFromPoints = function(points, position, angle, skinSize){
+    var l = this.lowerBound,
+        u = this.upperBound;
+
+    if(typeof(angle) !== "number"){
+        angle = 0;
+    }
+
+    // Set to the first point
+    if(angle !== 0){
+        vec2.rotate(l, points[0], angle);
+    } else {
+        vec2.copy(l, points[0]);
+    }
+    vec2.copy(u, l);
+
+    // Compute cosines and sines just once
+    var cosAngle = Math.cos(angle),
+        sinAngle = Math.sin(angle);
+    for(var i = 1; i<points.length; i++){
+        var p = points[i];
+
+        if(angle !== 0){
+            var x = p[0],
+                y = p[1];
+            tmp[0] = cosAngle * x -sinAngle * y;
+            tmp[1] = sinAngle * x +cosAngle * y;
+            p = tmp;
+        }
+
+        for(var j=0; j<2; j++){
+            if(p[j] > u[j]){
+                u[j] = p[j];
+            }
+            if(p[j] < l[j]){
+                l[j] = p[j];
+            }
+        }
+    }
+
+    // Add offset
+    if(position){
+        vec2.add(this.lowerBound, this.lowerBound, position);
+        vec2.add(this.upperBound, this.upperBound, position);
+    }
+
+    if(skinSize){
+        this.lowerBound[0] -= skinSize;
+        this.lowerBound[1] -= skinSize;
+        this.upperBound[0] += skinSize;
+        this.upperBound[1] += skinSize;
+    }
+};
+
+/**
+ * Copy bounds from an AABB to this AABB
+ * @method copy
+ * @param  {AABB} aabb
+ */
+AABB.prototype.copy = function(aabb){
+    vec2.copy(this.lowerBound, aabb.lowerBound);
+    vec2.copy(this.upperBound, aabb.upperBound);
+};
+
+/**
+ * Extend this AABB so that it covers the given AABB too.
+ * @method extend
+ * @param  {AABB} aabb
+ */
+AABB.prototype.extend = function(aabb){
+    // Loop over x and y
+    var i = 2;
+    while(i--){
+        // Extend lower bound
+        var l = aabb.lowerBound[i];
+        if(this.lowerBound[i] > l){
+            this.lowerBound[i] = l;
+        }
+
+        // Upper
+        var u = aabb.upperBound[i];
+        if(this.upperBound[i] < u){
+            this.upperBound[i] = u;
+        }
+    }
+};
+
+/**
+ * Returns true if the given AABB overlaps this AABB.
+ * @method overlaps
+ * @param  {AABB} aabb
+ * @return {Boolean}
+ */
+AABB.prototype.overlaps = function(aabb){
+    var l1 = this.lowerBound,
+        u1 = this.upperBound,
+        l2 = aabb.lowerBound,
+        u2 = aabb.upperBound;
+
+    //      l2        u2
+    //      |---------|
+    // |--------|
+    // l1       u1
+
+    return ((l2[0] <= u1[0] && u1[0] <= u2[0]) || (l1[0] <= u2[0] && u2[0] <= u1[0])) &&
+           ((l2[1] <= u1[1] && u1[1] <= u2[1]) || (l1[1] <= u2[1] && u2[1] <= u1[1]));
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\AABB.js","/collision")
+},{"../math/vec2":35,"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],12:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2');
+var Body = _dereq_('../objects/Body');
+
+module.exports = Broadphase;
+
+/**
+ * Base class for broadphase implementations.
+ * @class Broadphase
+ * @constructor
+ */
+function Broadphase(type){
+
+    this.type = type;
+
+    /**
+     * The resulting overlapping pairs. Will be filled with results during .getCollisionPairs().
+     * @property result
+     * @type {Array}
+     */
+    this.result = [];
+
+    /**
+     * The world to search for collision pairs in. To change it, use .setWorld()
+     * @property world
+     * @type {World}
+     * @readOnly
+     */
+    this.world = null;
+
+    /**
+     * The bounding volume type to use in the broadphase algorithms.
+     * @property {Number} boundingVolumeType
+     */
+    this.boundingVolumeType = Broadphase.AABB;
+}
+
+/**
+ * Axis aligned bounding box type.
+ * @static
+ * @property {Number} AABB
+ */
+Broadphase.AABB = 1;
+
+/**
+ * Bounding circle type.
+ * @static
+ * @property {Number} BOUNDING_CIRCLE
+ */
+Broadphase.BOUNDING_CIRCLE = 2;
+
+/**
+ * Set the world that we are searching for collision pairs in
+ * @method setWorld
+ * @param  {World} world
+ */
+Broadphase.prototype.setWorld = function(world){
+    this.world = world;
+};
+
+/**
+ * Get all potential intersecting body pairs.
+ * @method getCollisionPairs
+ * @param  {World} world The world to search in.
+ * @return {Array} An array of the bodies, ordered in pairs. Example: A result of [a,b,c,d] means that the potential pairs are: (a,b), (c,d).
+ */
+Broadphase.prototype.getCollisionPairs = function(world){
+    throw new Error("getCollisionPairs must be implemented in a subclass!");
+};
+
+var dist = vec2.create();
+
+/**
+ * Check whether the bounding radius of two bodies overlap.
+ * @method  boundingRadiusCheck
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {Boolean}
+ */
+Broadphase.boundingRadiusCheck = function(bodyA, bodyB){
+    vec2.sub(dist, bodyA.position, bodyB.position);
+    var d2 = vec2.squaredLength(dist),
+        r = bodyA.boundingRadius + bodyB.boundingRadius;
+    return d2 <= r*r;
+};
+
+/**
+ * Check whether the bounding radius of two bodies overlap.
+ * @method  boundingRadiusCheck
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {Boolean}
+ */
+Broadphase.aabbCheck = function(bodyA, bodyB){
+    return bodyA.getAABB().overlaps(bodyB.getAABB());
+};
+
+/**
+ * Check whether the bounding radius of two bodies overlap.
+ * @method  boundingRadiusCheck
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {Boolean}
+ */
+Broadphase.prototype.boundingVolumeCheck = function(bodyA, bodyB){
+    var result;
+
+    switch(this.boundingVolumeType){
+    case Broadphase.BOUNDING_CIRCLE:
+        result =  Broadphase.boundingRadiusCheck(bodyA,bodyB);
+        break;
+    case Broadphase.AABB:
+        result = Broadphase.aabbCheck(bodyA,bodyB);
+        break;
+    default:
+        throw new Error('Bounding volume type not recognized: '+this.boundingVolumeType);
+    }
+    return result;
+};
+
+/**
+ * Check whether two bodies are allowed to collide at all.
+ * @method  canCollide
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {Boolean}
+ */
+Broadphase.canCollide = function(bodyA, bodyB){
+
+    // Cannot collide static bodies
+    if(bodyA.type === Body.STATIC && bodyB.type === Body.STATIC){
+        return false;
+    }
+
+    // Cannot collide static vs kinematic bodies
+    if( (bodyA.type === Body.KINEMATIC && bodyB.type === Body.STATIC) ||
+        (bodyA.type === Body.STATIC    && bodyB.type === Body.KINEMATIC)){
+        return false;
+    }
+
+    // Cannot collide kinematic vs kinematic
+    if(bodyA.type === Body.KINEMATIC && bodyB.type === Body.KINEMATIC){
+        return false;
+    }
+
+    // Cannot collide both sleeping bodies
+    if(bodyA.sleepState === Body.SLEEPING && bodyB.sleepState === Body.SLEEPING){
+        return false;
+    }
+
+    // Cannot collide if one is static and the other is sleeping
+    if( (bodyA.sleepState === Body.SLEEPING && bodyB.type === Body.STATIC) ||
+        (bodyB.sleepState === Body.SLEEPING && bodyA.type === Body.STATIC)){
+        return false;
+    }
+
+    return true;
+};
+
+Broadphase.NAIVE = 1;
+Broadphase.SAP = 2;
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\Broadphase.js","/collision")
+},{"../math/vec2":35,"../objects/Body":36,"Zbi7gb":4,"buffer":1}],13:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Circle = _dereq_('../shapes/Circle')
+,   Plane = _dereq_('../shapes/Plane')
+,   Particle = _dereq_('../shapes/Particle')
+,   Broadphase = _dereq_('../collision/Broadphase')
+,   vec2 = _dereq_('../math/vec2')
+,   Utils = _dereq_('../utils/Utils');
+
+module.exports = GridBroadphase;
+
+/**
+ * Broadphase that uses axis-aligned bins.
+ * @class GridBroadphase
+ * @constructor
+ * @extends Broadphase
+ * @param {object} [options]
+ * @param {number} [options.xmin]   Lower x bound of the grid
+ * @param {number} [options.xmax]   Upper x bound
+ * @param {number} [options.ymin]   Lower y bound
+ * @param {number} [options.ymax]   Upper y bound
+ * @param {number} [options.nx]     Number of bins along x axis
+ * @param {number} [options.ny]     Number of bins along y axis
+ * @todo Should have an option for dynamic scene size
+ */
+function GridBroadphase(options){
+    Broadphase.apply(this);
+
+    options = Utils.defaults(options,{
+        xmin:   -100,
+        xmax:   100,
+        ymin:   -100,
+        ymax:   100,
+        nx:     10,
+        ny:     10
+    });
+
+    this.xmin = options.xmin;
+    this.ymin = options.ymin;
+    this.xmax = options.xmax;
+    this.ymax = options.ymax;
+    this.nx = options.nx;
+    this.ny = options.ny;
+
+    this.binsizeX = (this.xmax-this.xmin) / this.nx;
+    this.binsizeY = (this.ymax-this.ymin) / this.ny;
+}
+GridBroadphase.prototype = new Broadphase();
+GridBroadphase.prototype.constructor = GridBroadphase;
+
+/**
+ * Get collision pairs.
+ * @method getCollisionPairs
+ * @param  {World} world
+ * @return {Array}
+ */
+GridBroadphase.prototype.getCollisionPairs = function(world){
+    var result = [],
+        bodies = world.bodies,
+        Ncolliding = bodies.length,
+        binsizeX = this.binsizeX,
+        binsizeY = this.binsizeY,
+        nx = this.nx,
+        ny = this.ny,
+        xmin = this.xmin,
+        ymin = this.ymin,
+        xmax = this.xmax,
+        ymax = this.ymax;
+
+    // Todo: make garbage free
+    var bins=[], Nbins=nx*ny;
+    for(var i=0; i<Nbins; i++){
+        bins.push([]);
+    }
+
+    var xmult = nx / (xmax-xmin);
+    var ymult = ny / (ymax-ymin);
+
+    // Put all bodies into bins
+    for(var i=0; i!==Ncolliding; i++){
+        var bi = bodies[i];
+        var aabb = bi.aabb;
+        var lowerX = Math.max(aabb.lowerBound[0], xmin);
+        var lowerY = Math.max(aabb.lowerBound[1], ymin);
+        var upperX = Math.min(aabb.upperBound[0], xmax);
+        var upperY = Math.min(aabb.upperBound[1], ymax);
+        var xi1 = Math.floor(xmult * (lowerX - xmin));
+        var yi1 = Math.floor(ymult * (lowerY - ymin));
+        var xi2 = Math.floor(xmult * (upperX - xmin));
+        var yi2 = Math.floor(ymult * (upperY - ymin));
+
+        // Put in bin
+        for(var j=xi1; j<=xi2; j++){
+            for(var k=yi1; k<=yi2; k++){
+                var xi = j;
+                var yi = k;
+                var idx = xi*(ny-1) + yi;
+                if(idx >= 0 && idx < Nbins){
+                    bins[ idx ].push(bi);
+                }
+            }
+        }
+    }
+
+    // Check each bin
+    for(var i=0; i!==Nbins; i++){
+        var bin = bins[i];
+
+        for(var j=0, NbodiesInBin=bin.length; j!==NbodiesInBin; j++){
+            var bi = bin[j];
+            for(var k=0; k!==j; k++){
+                var bj = bin[k];
+                if(Broadphase.canCollide(bi,bj) && this.boundingVolumeCheck(bi,bj)){
+                    result.push(bi,bj);
+                }
+            }
+        }
+    }
+    return result;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\GridBroadphase.js","/collision")
+},{"../collision/Broadphase":12,"../math/vec2":35,"../shapes/Circle":42,"../shapes/Particle":46,"../shapes/Plane":47,"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],14:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Circle = _dereq_('../shapes/Circle'),
+    Plane = _dereq_('../shapes/Plane'),
+    Shape = _dereq_('../shapes/Shape'),
+    Particle = _dereq_('../shapes/Particle'),
+    Broadphase = _dereq_('../collision/Broadphase'),
+    vec2 = _dereq_('../math/vec2');
+
+module.exports = NaiveBroadphase;
+
+/**
+ * Naive broadphase implementation. Does N^2 tests.
+ *
+ * @class NaiveBroadphase
+ * @constructor
+ * @extends Broadphase
+ */
+function NaiveBroadphase(){
+    Broadphase.call(this, Broadphase.NAIVE);
+}
+NaiveBroadphase.prototype = new Broadphase();
+NaiveBroadphase.prototype.constructor = NaiveBroadphase;
+
+/**
+ * Get the colliding pairs
+ * @method getCollisionPairs
+ * @param  {World} world
+ * @return {Array}
+ */
+NaiveBroadphase.prototype.getCollisionPairs = function(world){
+    var bodies = world.bodies,
+        result = this.result;
+
+    result.length = 0;
+
+    for(var i=0, Ncolliding=bodies.length; i!==Ncolliding; i++){
+        var bi = bodies[i];
+
+        for(var j=0; j<i; j++){
+            var bj = bodies[j];
+
+            if(Broadphase.canCollide(bi,bj) && this.boundingVolumeCheck(bi,bj)){
+                result.push(bi,bj);
+            }
+        }
+    }
+
+    return result;
+};
+
+/**
+ * Returns all the bodies within an AABB.
+ * @method aabbQuery
+ * @param  {World} world
+ * @param  {AABB} aabb
+ * @param {array} result An array to store resulting bodies in.
+ * @return {array}
+ */
+NaiveBroadphase.prototype.aabbQuery = function(world, aabb, result){
+    result = result || [];
+
+    var bodies = world.bodies;
+    for(var i = 0; i < bodies.length; i++){
+        var b = bodies[i];
+
+        if(b.aabbNeedsUpdate){
+            b.updateAABB();
+        }
+
+        if(b.aabb.overlaps(aabb)){
+            result.push(b);
+        }
+    }
+
+    return result;
+};
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\NaiveBroadphase.js","/collision")
+},{"../collision/Broadphase":12,"../math/vec2":35,"../shapes/Circle":42,"../shapes/Particle":46,"../shapes/Plane":47,"../shapes/Shape":49,"Zbi7gb":4,"buffer":1}],15:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2')
+,   sub = vec2.sub
+,   add = vec2.add
+,   dot = vec2.dot
+,   Utils = _dereq_('../utils/Utils')
+,   TupleDictionary = _dereq_('../utils/TupleDictionary')
+,   Equation = _dereq_('../equations/Equation')
+,   ContactEquation = _dereq_('../equations/ContactEquation')
+,   FrictionEquation = _dereq_('../equations/FrictionEquation')
+,   Circle = _dereq_('../shapes/Circle')
+,   Convex = _dereq_('../shapes/Convex')
+,   Shape = _dereq_('../shapes/Shape')
+,   Body = _dereq_('../objects/Body')
+,   Rectangle = _dereq_('../shapes/Rectangle');
+
+module.exports = Narrowphase;
+
+// Temp things
+var yAxis = vec2.fromValues(0,1);
+
+var tmp1 = vec2.fromValues(0,0)
+,   tmp2 = vec2.fromValues(0,0)
+,   tmp3 = vec2.fromValues(0,0)
+,   tmp4 = vec2.fromValues(0,0)
+,   tmp5 = vec2.fromValues(0,0)
+,   tmp6 = vec2.fromValues(0,0)
+,   tmp7 = vec2.fromValues(0,0)
+,   tmp8 = vec2.fromValues(0,0)
+,   tmp9 = vec2.fromValues(0,0)
+,   tmp10 = vec2.fromValues(0,0)
+,   tmp11 = vec2.fromValues(0,0)
+,   tmp12 = vec2.fromValues(0,0)
+,   tmp13 = vec2.fromValues(0,0)
+,   tmp14 = vec2.fromValues(0,0)
+,   tmp15 = vec2.fromValues(0,0)
+,   tmp16 = vec2.fromValues(0,0)
+,   tmp17 = vec2.fromValues(0,0)
+,   tmp18 = vec2.fromValues(0,0)
+,   tmpArray = [];
+
+/**
+ * Narrowphase. Creates contacts and friction given shapes and transforms.
+ * @class Narrowphase
+ * @constructor
+ */
+function Narrowphase(){
+
+    /**
+     * @property contactEquations
+     * @type {Array}
+     */
+    this.contactEquations = [];
+
+    /**
+     * @property frictionEquations
+     * @type {Array}
+     */
+    this.frictionEquations = [];
+
+    /**
+     * Whether to make friction equations in the upcoming contacts.
+     * @property enableFriction
+     * @type {Boolean}
+     */
+    this.enableFriction = true;
+
+    /**
+     * Whether to make equations enabled in upcoming contacts.
+     * @property enabledEquations
+     * @type {Boolean}
+     */
+    this.enabledEquations = true;
+
+    /**
+     * The friction slip force to use when creating friction equations.
+     * @property slipForce
+     * @type {Number}
+     */
+    this.slipForce = 10.0;
+
+    /**
+     * The friction value to use in the upcoming friction equations.
+     * @property frictionCoefficient
+     * @type {Number}
+     */
+    this.frictionCoefficient = 0.3;
+
+    /**
+     * Will be the .relativeVelocity in each produced FrictionEquation.
+     * @property {Number} surfaceVelocity
+     */
+    this.surfaceVelocity = 0;
+
+    this.reuseObjects = true;
+    this.reusableContactEquations = [];
+    this.reusableFrictionEquations = [];
+
+    /**
+     * The restitution value to use in the next contact equations.
+     * @property restitution
+     * @type {Number}
+     */
+    this.restitution = 0;
+
+    /**
+     * The stiffness value to use in the next contact equations.
+     * @property {Number} stiffness
+     */
+    this.stiffness = Equation.DEFAULT_STIFFNESS;
+
+    /**
+     * The stiffness value to use in the next contact equations.
+     * @property {Number} stiffness
+     */
+    this.relaxation = Equation.DEFAULT_RELAXATION;
+
+    /**
+     * The stiffness value to use in the next friction equations.
+     * @property frictionStiffness
+     * @type {Number}
+     */
+    this.frictionStiffness = Equation.DEFAULT_STIFFNESS;
+
+    /**
+     * The relaxation value to use in the next friction equations.
+     * @property frictionRelaxation
+     * @type {Number}
+     */
+    this.frictionRelaxation = Equation.DEFAULT_RELAXATION;
+
+    /**
+     * Enable reduction of friction equations. If disabled, a box on a plane will generate 2 contact equations and 2 friction equations. If enabled, there will be only one friction equation. Same kind of simplifications are made  for all collision types.
+     * @property enableFrictionReduction
+     * @type {Boolean}
+     * @deprecated This flag will be removed when the feature is stable enough.
+     * @default true
+     */
+    this.enableFrictionReduction = true;
+
+    /**
+     * Keeps track of the colliding bodies last step.
+     * @private
+     * @property collidingBodiesLastStep
+     * @type {TupleDictionary}
+     */
+    this.collidingBodiesLastStep = new TupleDictionary();
+
+    /**
+     * Contact skin size value to use in the next contact equations.
+     * @property {Number} contactSkinSize
+     * @default 0.01
+     */
+    this.contactSkinSize = 0.01;
+}
+
+var bodiesOverlap_shapePositionA = vec2.create();
+var bodiesOverlap_shapePositionB = vec2.create();
+
+/**
+ * @method bodiesOverlap
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {Boolean}
+ */
+Narrowphase.prototype.bodiesOverlap = function(bodyA, bodyB){
+    var shapePositionA = bodiesOverlap_shapePositionA;
+    var shapePositionB = bodiesOverlap_shapePositionB;
+
+    // Loop over all shapes of bodyA
+    for(var k=0, Nshapesi=bodyA.shapes.length; k!==Nshapesi; k++){
+        var shapeA = bodyA.shapes[k],
+            positionA = bodyA.shapeOffsets[k],
+            angleA = bodyA.shapeAngles[k];
+
+        bodyA.toWorldFrame(shapePositionA, positionA);
+
+        // All shapes of body j
+        for(var l=0, Nshapesj=bodyB.shapes.length; l!==Nshapesj; l++){
+            var shapeB = bodyB.shapes[l],
+                positionB = bodyB.shapeOffsets[l],
+                angleB = bodyB.shapeAngles[l];
+
+            bodyB.toWorldFrame(shapePositionB, positionB);
+
+            if(this[shapeA.type | shapeB.type](
+                bodyA,
+                shapeA,
+                shapePositionA,
+                shapeA.angle + bodyA.angle,
+                bodyB,
+                shapeB,
+                shapePositionB,
+                shapeB.angle + bodyB.angle,
+                true
+            )){
+                return true;
+            }
+        }
+    }
+
+    return false;
+};
+
+/**
+ * Check if the bodies were in contact since the last reset().
+ * @method collidedLastStep
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {Boolean}
+ */
+Narrowphase.prototype.collidedLastStep = function(bodyA, bodyB){
+    var id1 = bodyA.id|0,
+        id2 = bodyB.id|0;
+    return !!this.collidingBodiesLastStep.get(id1, id2);
+};
+
+/**
+ * Throws away the old equations and gets ready to create new
+ * @method reset
+ */
+Narrowphase.prototype.reset = function(){
+    this.collidingBodiesLastStep.reset();
+
+    var eqs = this.contactEquations;
+    var l = eqs.length;
+    while(l--){
+        var eq = eqs[l],
+            id1 = eq.bodyA.id,
+            id2 = eq.bodyB.id;
+        this.collidingBodiesLastStep.set(id1, id2, true);
+    }
+
+    if(this.reuseObjects){
+        var ce = this.contactEquations,
+            fe = this.frictionEquations,
+            rfe = this.reusableFrictionEquations,
+            rce = this.reusableContactEquations;
+        Utils.appendArray(rce,ce);
+        Utils.appendArray(rfe,fe);
+    }
+
+    // Reset
+    this.contactEquations.length = this.frictionEquations.length = 0;
+};
+
+/**
+ * Creates a ContactEquation, either by reusing an existing object or creating a new one.
+ * @method createContactEquation
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {ContactEquation}
+ */
+Narrowphase.prototype.createContactEquation = function(bodyA, bodyB, shapeA, shapeB){
+    var c = this.reusableContactEquations.length ? this.reusableContactEquations.pop() : new ContactEquation(bodyA,bodyB);
+    c.bodyA = bodyA;
+    c.bodyB = bodyB;
+    c.shapeA = shapeA;
+    c.shapeB = shapeB;
+    c.restitution = this.restitution;
+    c.firstImpact = !this.collidedLastStep(bodyA,bodyB);
+    c.stiffness = this.stiffness;
+    c.relaxation = this.relaxation;
+    c.needsUpdate = true;
+    c.enabled = this.enabledEquations;
+    c.offset = this.contactSkinSize;
+
+    return c;
+};
+
+/**
+ * Creates a FrictionEquation, either by reusing an existing object or creating a new one.
+ * @method createFrictionEquation
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {FrictionEquation}
+ */
+Narrowphase.prototype.createFrictionEquation = function(bodyA, bodyB, shapeA, shapeB){
+    var c = this.reusableFrictionEquations.length ? this.reusableFrictionEquations.pop() : new FrictionEquation(bodyA,bodyB);
+    c.bodyA = bodyA;
+    c.bodyB = bodyB;
+    c.shapeA = shapeA;
+    c.shapeB = shapeB;
+    c.setSlipForce(this.slipForce);
+    c.frictionCoefficient = this.frictionCoefficient;
+    c.relativeVelocity = this.surfaceVelocity;
+    c.enabled = this.enabledEquations;
+    c.needsUpdate = true;
+    c.stiffness = this.frictionStiffness;
+    c.relaxation = this.frictionRelaxation;
+    c.contactEquations.length = 0;
+    return c;
+};
+
+/**
+ * Creates a FrictionEquation given the data in the ContactEquation. Uses same offset vectors ri and rj, but the tangent vector will be constructed from the collision normal.
+ * @method createFrictionFromContact
+ * @param  {ContactEquation} contactEquation
+ * @return {FrictionEquation}
+ */
+Narrowphase.prototype.createFrictionFromContact = function(c){
+    var eq = this.createFrictionEquation(c.bodyA, c.bodyB, c.shapeA, c.shapeB);
+    vec2.copy(eq.contactPointA, c.contactPointA);
+    vec2.copy(eq.contactPointB, c.contactPointB);
+    vec2.rotate90cw(eq.t, c.normalA);
+    eq.contactEquations.push(c);
+    return eq;
+};
+
+// Take the average N latest contact point on the plane.
+Narrowphase.prototype.createFrictionFromAverage = function(numContacts){
+    var c = this.contactEquations[this.contactEquations.length - 1];
+    var eq = this.createFrictionEquation(c.bodyA, c.bodyB, c.shapeA, c.shapeB);
+    var bodyA = c.bodyA;
+    var bodyB = c.bodyB;
+    vec2.set(eq.contactPointA, 0, 0);
+    vec2.set(eq.contactPointB, 0, 0);
+    vec2.set(eq.t, 0, 0);
+    for(var i=0; i!==numContacts; i++){
+        c = this.contactEquations[this.contactEquations.length - 1 - i];
+        if(c.bodyA === bodyA){
+            vec2.add(eq.t, eq.t, c.normalA);
+            vec2.add(eq.contactPointA, eq.contactPointA, c.contactPointA);
+            vec2.add(eq.contactPointB, eq.contactPointB, c.contactPointB);
+        } else {
+            vec2.sub(eq.t, eq.t, c.normalA);
+            vec2.add(eq.contactPointA, eq.contactPointA, c.contactPointB);
+            vec2.add(eq.contactPointB, eq.contactPointB, c.contactPointA);
+        }
+        eq.contactEquations.push(c);
+    }
+
+    var invNumContacts = 1/numContacts;
+    vec2.scale(eq.contactPointA, eq.contactPointA, invNumContacts);
+    vec2.scale(eq.contactPointB, eq.contactPointB, invNumContacts);
+    vec2.normalize(eq.t, eq.t);
+    vec2.rotate90cw(eq.t, eq.t);
+    return eq;
+};
+
+/**
+ * Convex/line narrowphase
+ * @method convexLine
+ * @param  {Body}       convexBody
+ * @param  {Convex}     convexShape
+ * @param  {Array}      convexOffset
+ * @param  {Number}     convexAngle
+ * @param  {Body}       lineBody
+ * @param  {Line}       lineShape
+ * @param  {Array}      lineOffset
+ * @param  {Number}     lineAngle
+ * @param {boolean}     justTest
+ * @todo Implement me!
+ */
+Narrowphase.prototype[Shape.LINE | Shape.CONVEX] =
+Narrowphase.prototype.convexLine = function(
+    convexBody,
+    convexShape,
+    convexOffset,
+    convexAngle,
+    lineBody,
+    lineShape,
+    lineOffset,
+    lineAngle,
+    justTest
+){
+    // TODO
+    if(justTest){
+        return false;
+    } else {
+        return 0;
+    }
+};
+
+/**
+ * Line/rectangle narrowphase
+ * @method lineRectangle
+ * @param  {Body}       lineBody
+ * @param  {Line}       lineShape
+ * @param  {Array}      lineOffset
+ * @param  {Number}     lineAngle
+ * @param  {Body}       rectangleBody
+ * @param  {Rectangle}  rectangleShape
+ * @param  {Array}      rectangleOffset
+ * @param  {Number}     rectangleAngle
+ * @param  {Boolean}    justTest
+ * @todo Implement me!
+ */
+Narrowphase.prototype[Shape.LINE | Shape.RECTANGLE] =
+Narrowphase.prototype.lineRectangle = function(
+    lineBody,
+    lineShape,
+    lineOffset,
+    lineAngle,
+    rectangleBody,
+    rectangleShape,
+    rectangleOffset,
+    rectangleAngle,
+    justTest
+){
+    // TODO
+    if(justTest){
+        return false;
+    } else {
+        return 0;
+    }
+};
+
+function setConvexToCapsuleShapeMiddle(convexShape, capsuleShape){
+    vec2.set(convexShape.vertices[0], -capsuleShape.length * 0.5, -capsuleShape.radius);
+    vec2.set(convexShape.vertices[1],  capsuleShape.length * 0.5, -capsuleShape.radius);
+    vec2.set(convexShape.vertices[2],  capsuleShape.length * 0.5,  capsuleShape.radius);
+    vec2.set(convexShape.vertices[3], -capsuleShape.length * 0.5,  capsuleShape.radius);
+}
+
+var convexCapsule_tempRect = new Rectangle(1,1),
+    convexCapsule_tempVec = vec2.create();
+
+/**
+ * Convex/capsule narrowphase
+ * @method convexCapsule
+ * @param  {Body}       convexBody
+ * @param  {Convex}     convexShape
+ * @param  {Array}      convexPosition
+ * @param  {Number}     convexAngle
+ * @param  {Body}       capsuleBody
+ * @param  {Capsule}    capsuleShape
+ * @param  {Array}      capsulePosition
+ * @param  {Number}     capsuleAngle
+ */
+Narrowphase.prototype[Shape.CAPSULE | Shape.CONVEX] =
+Narrowphase.prototype[Shape.CAPSULE | Shape.RECTANGLE] =
+Narrowphase.prototype.convexCapsule = function(
+    convexBody,
+    convexShape,
+    convexPosition,
+    convexAngle,
+    capsuleBody,
+    capsuleShape,
+    capsulePosition,
+    capsuleAngle,
+    justTest
+){
+
+    // Check the circles
+    // Add offsets!
+    var circlePos = convexCapsule_tempVec;
+    vec2.set(circlePos, capsuleShape.length/2,0);
+    vec2.rotate(circlePos,circlePos,capsuleAngle);
+    vec2.add(circlePos,circlePos,capsulePosition);
+    var result1 = this.circleConvex(capsuleBody,capsuleShape,circlePos,capsuleAngle, convexBody,convexShape,convexPosition,convexAngle, justTest, capsuleShape.radius);
+
+    vec2.set(circlePos,-capsuleShape.length/2, 0);
+    vec2.rotate(circlePos,circlePos,capsuleAngle);
+    vec2.add(circlePos,circlePos,capsulePosition);
+    var result2 = this.circleConvex(capsuleBody,capsuleShape,circlePos,capsuleAngle, convexBody,convexShape,convexPosition,convexAngle, justTest, capsuleShape.radius);
+
+    if(justTest && (result1 || result2)){
+        return true;
+    }
+
+    // Check center rect
+    var r = convexCapsule_tempRect;
+    setConvexToCapsuleShapeMiddle(r,capsuleShape);
+    var result = this.convexConvex(convexBody,convexShape,convexPosition,convexAngle, capsuleBody,r,capsulePosition,capsuleAngle, justTest);
+
+    return result + result1 + result2;
+};
+
+/**
+ * Capsule/line narrowphase
+ * @method lineCapsule
+ * @param  {Body}       lineBody
+ * @param  {Line}       lineShape
+ * @param  {Array}      linePosition
+ * @param  {Number}     lineAngle
+ * @param  {Body}       capsuleBody
+ * @param  {Capsule}    capsuleShape
+ * @param  {Array}      capsulePosition
+ * @param  {Number}     capsuleAngle
+ * @todo Implement me!
+ */
+Narrowphase.prototype[Shape.CAPSULE | Shape.LINE] =
+Narrowphase.prototype.lineCapsule = function(
+    lineBody,
+    lineShape,
+    linePosition,
+    lineAngle,
+    capsuleBody,
+    capsuleShape,
+    capsulePosition,
+    capsuleAngle,
+    justTest
+){
+    // TODO
+    if(justTest){
+        return false;
+    } else {
+        return 0;
+    }
+};
+
+var capsuleCapsule_tempVec1 = vec2.create();
+var capsuleCapsule_tempVec2 = vec2.create();
+var capsuleCapsule_tempRect1 = new Rectangle(1,1);
+
+/**
+ * Capsule/capsule narrowphase
+ * @method capsuleCapsule
+ * @param  {Body}       bi
+ * @param  {Capsule}    si
+ * @param  {Array}      xi
+ * @param  {Number}     ai
+ * @param  {Body}       bj
+ * @param  {Capsule}    sj
+ * @param  {Array}      xj
+ * @param  {Number}     aj
+ */
+Narrowphase.prototype[Shape.CAPSULE | Shape.CAPSULE] =
+Narrowphase.prototype.capsuleCapsule = function(bi,si,xi,ai, bj,sj,xj,aj, justTest){
+
+    var enableFrictionBefore;
+
+    // Check the circles
+    // Add offsets!
+    var circlePosi = capsuleCapsule_tempVec1,
+        circlePosj = capsuleCapsule_tempVec2;
+
+    var numContacts = 0;
+
+
+    // Need 4 circle checks, between all
+    for(var i=0; i<2; i++){
+
+        vec2.set(circlePosi,(i===0?-1:1)*si.length/2,0);
+        vec2.rotate(circlePosi,circlePosi,ai);
+        vec2.add(circlePosi,circlePosi,xi);
+
+        for(var j=0; j<2; j++){
+
+            vec2.set(circlePosj,(j===0?-1:1)*sj.length/2, 0);
+            vec2.rotate(circlePosj,circlePosj,aj);
+            vec2.add(circlePosj,circlePosj,xj);
+
+            // Temporarily turn off friction
+            if(this.enableFrictionReduction){
+                enableFrictionBefore = this.enableFriction;
+                this.enableFriction = false;
+            }
+
+            var result = this.circleCircle(bi,si,circlePosi,ai, bj,sj,circlePosj,aj, justTest, si.radius, sj.radius);
+
+            if(this.enableFrictionReduction){
+                this.enableFriction = enableFrictionBefore;
+            }
+
+            if(justTest && result){
+                return true;
+            }
+
+            numContacts += result;
+        }
+    }
+
+    if(this.enableFrictionReduction){
+        // Temporarily turn off friction
+        enableFrictionBefore = this.enableFriction;
+        this.enableFriction = false;
+    }
+
+    // Check circles against the center rectangles
+    var rect = capsuleCapsule_tempRect1;
+    setConvexToCapsuleShapeMiddle(rect,si);
+    var result1 = this.convexCapsule(bi,rect,xi,ai, bj,sj,xj,aj, justTest);
+
+    if(this.enableFrictionReduction){
+        this.enableFriction = enableFrictionBefore;
+    }
+
+    if(justTest && result1){
+        return true;
+    }
+    numContacts += result1;
+
+    if(this.enableFrictionReduction){
+        // Temporarily turn off friction
+        var enableFrictionBefore = this.enableFriction;
+        this.enableFriction = false;
+    }
+
+    setConvexToCapsuleShapeMiddle(rect,sj);
+    var result2 = this.convexCapsule(bj,rect,xj,aj, bi,si,xi,ai, justTest);
+
+    if(this.enableFrictionReduction){
+        this.enableFriction = enableFrictionBefore;
+    }
+
+    if(justTest && result2){
+        return true;
+    }
+    numContacts += result2;
+
+    if(this.enableFrictionReduction){
+        if(numContacts && this.enableFriction){
+            this.frictionEquations.push(this.createFrictionFromAverage(numContacts));
+        }
+    }
+
+    return numContacts;
+};
+
+/**
+ * Line/line narrowphase
+ * @method lineLine
+ * @param  {Body}       bodyA
+ * @param  {Line}       shapeA
+ * @param  {Array}      positionA
+ * @param  {Number}     angleA
+ * @param  {Body}       bodyB
+ * @param  {Line}       shapeB
+ * @param  {Array}      positionB
+ * @param  {Number}     angleB
+ * @todo Implement me!
+ */
+Narrowphase.prototype[Shape.LINE | Shape.LINE] =
+Narrowphase.prototype.lineLine = function(
+    bodyA,
+    shapeA,
+    positionA,
+    angleA,
+    bodyB,
+    shapeB,
+    positionB,
+    angleB,
+    justTest
+){
+    // TODO
+    if(justTest){
+        return false;
+    } else {
+        return 0;
+    }
+};
+
+/**
+ * Plane/line Narrowphase
+ * @method planeLine
+ * @param  {Body}   planeBody
+ * @param  {Plane}  planeShape
+ * @param  {Array}  planeOffset
+ * @param  {Number} planeAngle
+ * @param  {Body}   lineBody
+ * @param  {Line}   lineShape
+ * @param  {Array}  lineOffset
+ * @param  {Number} lineAngle
+ */
+Narrowphase.prototype[Shape.PLANE | Shape.LINE] =
+Narrowphase.prototype.planeLine = function(planeBody, planeShape, planeOffset, planeAngle,
+                                           lineBody,  lineShape,  lineOffset,  lineAngle, justTest){
+    var worldVertex0 = tmp1,
+        worldVertex1 = tmp2,
+        worldVertex01 = tmp3,
+        worldVertex11 = tmp4,
+        worldEdge = tmp5,
+        worldEdgeUnit = tmp6,
+        dist = tmp7,
+        worldNormal = tmp8,
+        worldTangent = tmp9,
+        verts = tmpArray,
+        numContacts = 0;
+
+    // Get start and end points
+    vec2.set(worldVertex0, -lineShape.length/2, 0);
+    vec2.set(worldVertex1,  lineShape.length/2, 0);
+
+    // Not sure why we have to use worldVertex*1 here, but it won't work otherwise. Tired.
+    vec2.rotate(worldVertex01, worldVertex0, lineAngle);
+    vec2.rotate(worldVertex11, worldVertex1, lineAngle);
+
+    add(worldVertex01, worldVertex01, lineOffset);
+    add(worldVertex11, worldVertex11, lineOffset);
+
+    vec2.copy(worldVertex0,worldVertex01);
+    vec2.copy(worldVertex1,worldVertex11);
+
+    // Get vector along the line
+    sub(worldEdge, worldVertex1, worldVertex0);
+    vec2.normalize(worldEdgeUnit, worldEdge);
+
+    // Get tangent to the edge.
+    vec2.rotate90cw(worldTangent, worldEdgeUnit);
+
+    vec2.rotate(worldNormal, yAxis, planeAngle);
+
+    // Check line ends
+    verts[0] = worldVertex0;
+    verts[1] = worldVertex1;
+    for(var i=0; i<verts.length; i++){
+        var v = verts[i];
+
+        sub(dist, v, planeOffset);
+
+        var d = dot(dist,worldNormal);
+
+        if(d < 0){
+
+            if(justTest){
+                return true;
+            }
+
+            var c = this.createContactEquation(planeBody,lineBody,planeShape,lineShape);
+            numContacts++;
+
+            vec2.copy(c.normalA, worldNormal);
+            vec2.normalize(c.normalA,c.normalA);
+
+            // distance vector along plane normal
+            vec2.scale(dist, worldNormal, d);
+
+            // Vector from plane center to contact
+            sub(c.contactPointA, v, dist);
+            sub(c.contactPointA, c.contactPointA, planeBody.position);
+
+            // From line center to contact
+            sub(c.contactPointB, v,    lineOffset);
+            add(c.contactPointB, c.contactPointB, lineOffset);
+            sub(c.contactPointB, c.contactPointB, lineBody.position);
+
+            this.contactEquations.push(c);
+
+            if(!this.enableFrictionReduction){
+                if(this.enableFriction){
+                    this.frictionEquations.push(this.createFrictionFromContact(c));
+                }
+            }
+        }
+    }
+
+    if(justTest){
+        return false;
+    }
+
+    if(!this.enableFrictionReduction){
+        if(numContacts && this.enableFriction){
+            this.frictionEquations.push(this.createFrictionFromAverage(numContacts));
+        }
+    }
+
+    return numContacts;
+};
+
+Narrowphase.prototype[Shape.PARTICLE | Shape.CAPSULE] =
+Narrowphase.prototype.particleCapsule = function(
+    particleBody,
+    particleShape,
+    particlePosition,
+    particleAngle,
+    capsuleBody,
+    capsuleShape,
+    capsulePosition,
+    capsuleAngle,
+    justTest
+){
+    return this.circleLine(particleBody,particleShape,particlePosition,particleAngle, capsuleBody,capsuleShape,capsulePosition,capsuleAngle, justTest, capsuleShape.radius, 0);
+};
+
+/**
+ * Circle/line Narrowphase
+ * @method circleLine
+ * @param  {Body} circleBody
+ * @param  {Circle} circleShape
+ * @param  {Array} circleOffset
+ * @param  {Number} circleAngle
+ * @param  {Body} lineBody
+ * @param  {Line} lineShape
+ * @param  {Array} lineOffset
+ * @param  {Number} lineAngle
+ * @param {Boolean} justTest If set to true, this function will return the result (intersection or not) without adding equations.
+ * @param {Number} lineRadius Radius to add to the line. Can be used to test Capsules.
+ * @param {Number} circleRadius If set, this value overrides the circle shape radius.
+ */
+Narrowphase.prototype[Shape.CIRCLE | Shape.LINE] =
+Narrowphase.prototype.circleLine = function(
+    circleBody,
+    circleShape,
+    circleOffset,
+    circleAngle,
+    lineBody,
+    lineShape,
+    lineOffset,
+    lineAngle,
+    justTest,
+    lineRadius,
+    circleRadius
+){
+    var lineRadius = lineRadius || 0,
+        circleRadius = typeof(circleRadius)!=="undefined" ? circleRadius : circleShape.radius,
+
+        orthoDist = tmp1,
+        lineToCircleOrthoUnit = tmp2,
+        projectedPoint = tmp3,
+        centerDist = tmp4,
+        worldTangent = tmp5,
+        worldEdge = tmp6,
+        worldEdgeUnit = tmp7,
+        worldVertex0 = tmp8,
+        worldVertex1 = tmp9,
+        worldVertex01 = tmp10,
+        worldVertex11 = tmp11,
+        dist = tmp12,
+        lineToCircle = tmp13,
+        lineEndToLineRadius = tmp14,
+
+        verts = tmpArray;
+
+    // Get start and end points
+    vec2.set(worldVertex0, -lineShape.length/2, 0);
+    vec2.set(worldVertex1,  lineShape.length/2, 0);
+
+    // Not sure why we have to use worldVertex*1 here, but it won't work otherwise. Tired.
+    vec2.rotate(worldVertex01, worldVertex0, lineAngle);
+    vec2.rotate(worldVertex11, worldVertex1, lineAngle);
+
+    add(worldVertex01, worldVertex01, lineOffset);
+    add(worldVertex11, worldVertex11, lineOffset);
+
+    vec2.copy(worldVertex0,worldVertex01);
+    vec2.copy(worldVertex1,worldVertex11);
+
+    // Get vector along the line
+    sub(worldEdge, worldVertex1, worldVertex0);
+    vec2.normalize(worldEdgeUnit, worldEdge);
+
+    // Get tangent to the edge.
+    vec2.rotate90cw(worldTangent, worldEdgeUnit);
+
+    // Check distance from the plane spanned by the edge vs the circle
+    sub(dist, circleOffset, worldVertex0);
+    var d = dot(dist, worldTangent); // Distance from center of line to circle center
+    sub(centerDist, worldVertex0, lineOffset);
+
+    sub(lineToCircle, circleOffset, lineOffset);
+
+    var radiusSum = circleRadius + lineRadius;
+
+    if(Math.abs(d) < radiusSum){
+
+        // Now project the circle onto the edge
+        vec2.scale(orthoDist, worldTangent, d);
+        sub(projectedPoint, circleOffset, orthoDist);
+
+        // Add the missing line radius
+        vec2.scale(lineToCircleOrthoUnit, worldTangent, dot(worldTangent, lineToCircle));
+        vec2.normalize(lineToCircleOrthoUnit,lineToCircleOrthoUnit);
+        vec2.scale(lineToCircleOrthoUnit, lineToCircleOrthoUnit, lineRadius);
+        add(projectedPoint,projectedPoint,lineToCircleOrthoUnit);
+
+        // Check if the point is within the edge span
+        var pos =  dot(worldEdgeUnit, projectedPoint);
+        var pos0 = dot(worldEdgeUnit, worldVertex0);
+        var pos1 = dot(worldEdgeUnit, worldVertex1);
+
+        if(pos > pos0 && pos < pos1){
+            // We got contact!
+
+            if(justTest){
+                return true;
+            }
+
+            var c = this.createContactEquation(circleBody,lineBody,circleShape,lineShape);
+
+            vec2.scale(c.normalA, orthoDist, -1);
+            vec2.normalize(c.normalA, c.normalA);
+
+            vec2.scale( c.contactPointA, c.normalA,  circleRadius);
+            add(c.contactPointA, c.contactPointA, circleOffset);
+            sub(c.contactPointA, c.contactPointA, circleBody.position);
+
+            sub(c.contactPointB, projectedPoint, lineOffset);
+            add(c.contactPointB, c.contactPointB, lineOffset);
+            sub(c.contactPointB, c.contactPointB, lineBody.position);
+
+            this.contactEquations.push(c);
+
+            if(this.enableFriction){
+                this.frictionEquations.push(this.createFrictionFromContact(c));
+            }
+
+            return 1;
+        }
+    }
+
+    // Add corner
+    verts[0] = worldVertex0;
+    verts[1] = worldVertex1;
+
+    for(var i=0; i<verts.length; i++){
+        var v = verts[i];
+
+        sub(dist, v, circleOffset);
+
+        if(vec2.squaredLength(dist) < Math.pow(radiusSum, 2)){
+
+            if(justTest){
+                return true;
+            }
+
+            var c = this.createContactEquation(circleBody,lineBody,circleShape,lineShape);
+
+            vec2.copy(c.normalA, dist);
+            vec2.normalize(c.normalA,c.normalA);
+
+            // Vector from circle to contact point is the normal times the circle radius
+            vec2.scale(c.contactPointA, c.normalA, circleRadius);
+            add(c.contactPointA, c.contactPointA, circleOffset);
+            sub(c.contactPointA, c.contactPointA, circleBody.position);
+
+            sub(c.contactPointB, v, lineOffset);
+            vec2.scale(lineEndToLineRadius, c.normalA, -lineRadius);
+            add(c.contactPointB, c.contactPointB, lineEndToLineRadius);
+            add(c.contactPointB, c.contactPointB, lineOffset);
+            sub(c.contactPointB, c.contactPointB, lineBody.position);
+
+            this.contactEquations.push(c);
+
+            if(this.enableFriction){
+                this.frictionEquations.push(this.createFrictionFromContact(c));
+            }
+
+            return 1;
+        }
+    }
+
+    return 0;
+};
+
+/**
+ * Circle/capsule Narrowphase
+ * @method circleCapsule
+ * @param  {Body}   bi
+ * @param  {Circle} si
+ * @param  {Array}  xi
+ * @param  {Number} ai
+ * @param  {Body}   bj
+ * @param  {Line}   sj
+ * @param  {Array}  xj
+ * @param  {Number} aj
+ */
+Narrowphase.prototype[Shape.CIRCLE | Shape.CAPSULE] =
+Narrowphase.prototype.circleCapsule = function(bi,si,xi,ai, bj,sj,xj,aj, justTest){
+    return this.circleLine(bi,si,xi,ai, bj,sj,xj,aj, justTest, sj.radius);
+};
+
+/**
+ * Circle/convex Narrowphase.
+ * @method circleConvex
+ * @param  {Body} circleBody
+ * @param  {Circle} circleShape
+ * @param  {Array} circleOffset
+ * @param  {Number} circleAngle
+ * @param  {Body} convexBody
+ * @param  {Convex} convexShape
+ * @param  {Array} convexOffset
+ * @param  {Number} convexAngle
+ * @param  {Boolean} justTest
+ * @param  {Number} circleRadius
+ */
+Narrowphase.prototype[Shape.CIRCLE | Shape.CONVEX] =
+Narrowphase.prototype[Shape.CIRCLE | Shape.RECTANGLE] =
+Narrowphase.prototype.circleConvex = function(
+    circleBody,
+    circleShape,
+    circleOffset,
+    circleAngle,
+    convexBody,
+    convexShape,
+    convexOffset,
+    convexAngle,
+    justTest,
+    circleRadius
+){
+    var circleRadius = typeof(circleRadius)==="number" ? circleRadius : circleShape.radius;
+
+    var worldVertex0 = tmp1,
+        worldVertex1 = tmp2,
+        worldEdge = tmp3,
+        worldEdgeUnit = tmp4,
+        worldNormal = tmp5,
+        centerDist = tmp6,
+        convexToCircle = tmp7,
+        orthoDist = tmp8,
+        projectedPoint = tmp9,
+        dist = tmp10,
+        worldVertex = tmp11,
+
+        closestEdge = -1,
+        closestEdgeDistance = null,
+        closestEdgeOrthoDist = tmp12,
+        closestEdgeProjectedPoint = tmp13,
+        candidate = tmp14,
+        candidateDist = tmp15,
+        minCandidate = tmp16,
+
+        found = false,
+        minCandidateDistance = Number.MAX_VALUE;
+
+    var numReported = 0;
+
+    // New algorithm:
+    // 1. Check so center of circle is not inside the polygon. If it is, this wont work...
+    // 2. For each edge
+    // 2. 1. Get point on circle that is closest to the edge (scale normal with -radius)
+    // 2. 2. Check if point is inside.
+
+    var verts = convexShape.vertices;
+
+    // Check all edges first
+    for(var i=0; i!==verts.length+1; i++){
+        var v0 = verts[i%verts.length],
+            v1 = verts[(i+1)%verts.length];
+
+        vec2.rotate(worldVertex0, v0, convexAngle);
+        vec2.rotate(worldVertex1, v1, convexAngle);
+        add(worldVertex0, worldVertex0, convexOffset);
+        add(worldVertex1, worldVertex1, convexOffset);
+        sub(worldEdge, worldVertex1, worldVertex0);
+
+        vec2.normalize(worldEdgeUnit, worldEdge);
+
+        // Get tangent to the edge. Points out of the Convex
+        vec2.rotate90cw(worldNormal, worldEdgeUnit);
+
+        // Get point on circle, closest to the polygon
+        vec2.scale(candidate,worldNormal,-circleShape.radius);
+        add(candidate,candidate,circleOffset);
+
+        if(pointInConvex(candidate,convexShape,convexOffset,convexAngle)){
+
+            vec2.sub(candidateDist,worldVertex0,candidate);
+            var candidateDistance = Math.abs(vec2.dot(candidateDist,worldNormal));
+
+            if(candidateDistance < minCandidateDistance){
+                vec2.copy(minCandidate,candidate);
+                minCandidateDistance = candidateDistance;
+                vec2.scale(closestEdgeProjectedPoint,worldNormal,candidateDistance);
+                vec2.add(closestEdgeProjectedPoint,closestEdgeProjectedPoint,candidate);
+                found = true;
+            }
+        }
+    }
+
+    if(found){
+
+        if(justTest){
+            return true;
+        }
+
+        var c = this.createContactEquation(circleBody,convexBody,circleShape,convexShape);
+        vec2.sub(c.normalA, minCandidate, circleOffset);
+        vec2.normalize(c.normalA, c.normalA);
+
+        vec2.scale(c.contactPointA,  c.normalA, circleRadius);
+        add(c.contactPointA, c.contactPointA, circleOffset);
+        sub(c.contactPointA, c.contactPointA, circleBody.position);
+
+        sub(c.contactPointB, closestEdgeProjectedPoint, convexOffset);
+        add(c.contactPointB, c.contactPointB, convexOffset);
+        sub(c.contactPointB, c.contactPointB, convexBody.position);
+
+        this.contactEquations.push(c);
+
+        if(this.enableFriction){
+            this.frictionEquations.push( this.createFrictionFromContact(c) );
+        }
+
+        return 1;
+    }
+
+    // Check all vertices
+    if(circleRadius > 0){
+        for(var i=0; i<verts.length; i++){
+            var localVertex = verts[i];
+            vec2.rotate(worldVertex, localVertex, convexAngle);
+            add(worldVertex, worldVertex, convexOffset);
+
+            sub(dist, worldVertex, circleOffset);
+            if(vec2.squaredLength(dist) < Math.pow(circleRadius, 2)){
+
+                if(justTest){
+                    return true;
+                }
+
+                var c = this.createContactEquation(circleBody,convexBody,circleShape,convexShape);
+
+                vec2.copy(c.normalA, dist);
+                vec2.normalize(c.normalA,c.normalA);
+
+                // Vector from circle to contact point is the normal times the circle radius
+                vec2.scale(c.contactPointA, c.normalA, circleRadius);
+                add(c.contactPointA, c.contactPointA, circleOffset);
+                sub(c.contactPointA, c.contactPointA, circleBody.position);
+
+                sub(c.contactPointB, worldVertex, convexOffset);
+                add(c.contactPointB, c.contactPointB, convexOffset);
+                sub(c.contactPointB, c.contactPointB, convexBody.position);
+
+                this.contactEquations.push(c);
+
+                if(this.enableFriction){
+                    this.frictionEquations.push(this.createFrictionFromContact(c));
+                }
+
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+};
+
+var pic_worldVertex0 = vec2.create(),
+    pic_worldVertex1 = vec2.create(),
+    pic_r0 = vec2.create(),
+    pic_r1 = vec2.create();
+
+/*
+ * Check if a point is in a polygon
+ */
+function pointInConvex(worldPoint,convexShape,convexOffset,convexAngle){
+    var worldVertex0 = pic_worldVertex0,
+        worldVertex1 = pic_worldVertex1,
+        r0 = pic_r0,
+        r1 = pic_r1,
+        point = worldPoint,
+        verts = convexShape.vertices,
+        lastCross = null;
+    for(var i=0; i!==verts.length+1; i++){
+        var v0 = verts[i%verts.length],
+            v1 = verts[(i+1)%verts.length];
+
+        // Transform vertices to world
+        // @todo The point should be transformed to local coordinates in the convex, no need to transform each vertex
+        vec2.rotate(worldVertex0, v0, convexAngle);
+        vec2.rotate(worldVertex1, v1, convexAngle);
+        add(worldVertex0, worldVertex0, convexOffset);
+        add(worldVertex1, worldVertex1, convexOffset);
+
+        sub(r0, worldVertex0, point);
+        sub(r1, worldVertex1, point);
+        var cross = vec2.crossLength(r0,r1);
+
+        if(lastCross===null){
+            lastCross = cross;
+        }
+
+        // If we got a different sign of the distance vector, the point is out of the polygon
+        if(cross*lastCross <= 0){
+            return false;
+        }
+        lastCross = cross;
+    }
+    return true;
+}
+
+/**
+ * Particle/convex Narrowphase
+ * @method particleConvex
+ * @param  {Body} particleBody
+ * @param  {Particle} particleShape
+ * @param  {Array} particleOffset
+ * @param  {Number} particleAngle
+ * @param  {Body} convexBody
+ * @param  {Convex} convexShape
+ * @param  {Array} convexOffset
+ * @param  {Number} convexAngle
+ * @param {Boolean} justTest
+ * @todo use pointInConvex and code more similar to circleConvex
+ * @todo don't transform each vertex, but transform the particle position to convex-local instead
+ */
+Narrowphase.prototype[Shape.PARTICLE | Shape.CONVEX] =
+Narrowphase.prototype[Shape.PARTICLE | Shape.RECTANGLE] =
+Narrowphase.prototype.particleConvex = function(
+    particleBody,
+    particleShape,
+    particleOffset,
+    particleAngle,
+    convexBody,
+    convexShape,
+    convexOffset,
+    convexAngle,
+    justTest
+){
+    var worldVertex0 = tmp1,
+        worldVertex1 = tmp2,
+        worldEdge = tmp3,
+        worldEdgeUnit = tmp4,
+        worldTangent = tmp5,
+        centerDist = tmp6,
+        convexToparticle = tmp7,
+        orthoDist = tmp8,
+        projectedPoint = tmp9,
+        dist = tmp10,
+        worldVertex = tmp11,
+        closestEdge = -1,
+        closestEdgeDistance = null,
+        closestEdgeOrthoDist = tmp12,
+        closestEdgeProjectedPoint = tmp13,
+        r0 = tmp14, // vector from particle to vertex0
+        r1 = tmp15,
+        localPoint = tmp16,
+        candidateDist = tmp17,
+        minEdgeNormal = tmp18,
+        minCandidateDistance = Number.MAX_VALUE;
+
+    var numReported = 0,
+        found = false,
+        verts = convexShape.vertices;
+
+    // Check if the particle is in the polygon at all
+    if(!pointInConvex(particleOffset,convexShape,convexOffset,convexAngle)){
+        return 0;
+    }
+
+    if(justTest){
+        return true;
+    }
+
+    // Check edges first
+    var lastCross = null;
+    for(var i=0; i!==verts.length+1; i++){
+        var v0 = verts[i%verts.length],
+            v1 = verts[(i+1)%verts.length];
+
+        // Transform vertices to world
+        vec2.rotate(worldVertex0, v0, convexAngle);
+        vec2.rotate(worldVertex1, v1, convexAngle);
+        add(worldVertex0, worldVertex0, convexOffset);
+        add(worldVertex1, worldVertex1, convexOffset);
+
+        // Get world edge
+        sub(worldEdge, worldVertex1, worldVertex0);
+        vec2.normalize(worldEdgeUnit, worldEdge);
+
+        // Get tangent to the edge. Points out of the Convex
+        vec2.rotate90cw(worldTangent, worldEdgeUnit);
+
+        // Check distance from the infinite line (spanned by the edge) to the particle
+        sub(dist, particleOffset, worldVertex0);
+        var d = dot(dist, worldTangent);
+        sub(centerDist, worldVertex0, convexOffset);
+
+        sub(convexToparticle, particleOffset, convexOffset);
+
+        vec2.sub(candidateDist,worldVertex0,particleOffset);
+        var candidateDistance = Math.abs(vec2.dot(candidateDist,worldTangent));
+
+        if(candidateDistance < minCandidateDistance){
+            minCandidateDistance = candidateDistance;
+            vec2.scale(closestEdgeProjectedPoint,worldTangent,candidateDistance);
+            vec2.add(closestEdgeProjectedPoint,closestEdgeProjectedPoint,particleOffset);
+            vec2.copy(minEdgeNormal,worldTangent);
+            found = true;
+        }
+    }
+
+    if(found){
+        var c = this.createContactEquation(particleBody,convexBody,particleShape,convexShape);
+
+        vec2.scale(c.normalA, minEdgeNormal, -1);
+        vec2.normalize(c.normalA, c.normalA);
+
+        // Particle has no extent to the contact point
+        vec2.set(c.contactPointA,  0, 0);
+        add(c.contactPointA, c.contactPointA, particleOffset);
+        sub(c.contactPointA, c.contactPointA, particleBody.position);
+
+        // From convex center to point
+        sub(c.contactPointB, closestEdgeProjectedPoint, convexOffset);
+        add(c.contactPointB, c.contactPointB, convexOffset);
+        sub(c.contactPointB, c.contactPointB, convexBody.position);
+
+        this.contactEquations.push(c);
+
+        if(this.enableFriction){
+            this.frictionEquations.push( this.createFrictionFromContact(c) );
+        }
+
+        return 1;
+    }
+
+
+    return 0;
+};
+
+/**
+ * Circle/circle Narrowphase
+ * @method circleCircle
+ * @param  {Body} bodyA
+ * @param  {Circle} shapeA
+ * @param  {Array} offsetA
+ * @param  {Number} angleA
+ * @param  {Body} bodyB
+ * @param  {Circle} shapeB
+ * @param  {Array} offsetB
+ * @param  {Number} angleB
+ * @param {Boolean} justTest
+ * @param {Number} [radiusA] Optional radius to use for shapeA
+ * @param {Number} [radiusB] Optional radius to use for shapeB
+ */
+Narrowphase.prototype[Shape.CIRCLE] =
+Narrowphase.prototype.circleCircle = function(
+    bodyA,
+    shapeA,
+    offsetA,
+    angleA,
+    bodyB,
+    shapeB,
+    offsetB,
+    angleB,
+    justTest,
+    radiusA,
+    radiusB
+){
+
+    var dist = tmp1,
+        radiusA = radiusA || shapeA.radius,
+        radiusB = radiusB || shapeB.radius;
+
+    sub(dist,offsetA,offsetB);
+    var r = radiusA + radiusB;
+    if(vec2.squaredLength(dist) > Math.pow(r,2)){
+        return 0;
+    }
+
+    if(justTest){
+        return true;
+    }
+
+    var c = this.createContactEquation(bodyA,bodyB,shapeA,shapeB);
+    sub(c.normalA, offsetB, offsetA);
+    vec2.normalize(c.normalA,c.normalA);
+
+    vec2.scale( c.contactPointA, c.normalA,  radiusA);
+    vec2.scale( c.contactPointB, c.normalA, -radiusB);
+
+    add(c.contactPointA, c.contactPointA, offsetA);
+    sub(c.contactPointA, c.contactPointA, bodyA.position);
+
+    add(c.contactPointB, c.contactPointB, offsetB);
+    sub(c.contactPointB, c.contactPointB, bodyB.position);
+
+    this.contactEquations.push(c);
+
+    if(this.enableFriction){
+        this.frictionEquations.push(this.createFrictionFromContact(c));
+    }
+    return 1;
+};
+
+/**
+ * Plane/Convex Narrowphase
+ * @method planeConvex
+ * @param  {Body} planeBody
+ * @param  {Plane} planeShape
+ * @param  {Array} planeOffset
+ * @param  {Number} planeAngle
+ * @param  {Body} convexBody
+ * @param  {Convex} convexShape
+ * @param  {Array} convexOffset
+ * @param  {Number} convexAngle
+ * @param {Boolean} justTest
+ */
+Narrowphase.prototype[Shape.PLANE | Shape.CONVEX] =
+Narrowphase.prototype[Shape.PLANE | Shape.RECTANGLE] =
+Narrowphase.prototype.planeConvex = function(
+    planeBody,
+    planeShape,
+    planeOffset,
+    planeAngle,
+    convexBody,
+    convexShape,
+    convexOffset,
+    convexAngle,
+    justTest
+){
+    var worldVertex = tmp1,
+        worldNormal = tmp2,
+        dist = tmp3;
+
+    var numReported = 0;
+    vec2.rotate(worldNormal, yAxis, planeAngle);
+
+    for(var i=0; i!==convexShape.vertices.length; i++){
+        var v = convexShape.vertices[i];
+        vec2.rotate(worldVertex, v, convexAngle);
+        add(worldVertex, worldVertex, convexOffset);
+
+        sub(dist, worldVertex, planeOffset);
+
+        if(dot(dist,worldNormal) <= 0){
+
+            if(justTest){
+                return true;
+            }
+
+            // Found vertex
+            numReported++;
+
+            var c = this.createContactEquation(planeBody,convexBody,planeShape,convexShape);
+
+            sub(dist, worldVertex, planeOffset);
+
+            vec2.copy(c.normalA, worldNormal);
+
+            var d = dot(dist, c.normalA);
+            vec2.scale(dist, c.normalA, d);
+
+            // rj is from convex center to contact
+            sub(c.contactPointB, worldVertex, convexBody.position);
+
+
+            // ri is from plane center to contact
+            sub( c.contactPointA, worldVertex, dist);
+            sub( c.contactPointA, c.contactPointA, planeBody.position);
+
+            this.contactEquations.push(c);
+
+            if(!this.enableFrictionReduction){
+                if(this.enableFriction){
+                    this.frictionEquations.push(this.createFrictionFromContact(c));
+                }
+            }
+        }
+    }
+
+    if(this.enableFrictionReduction){
+        if(this.enableFriction && numReported){
+            this.frictionEquations.push(this.createFrictionFromAverage(numReported));
+        }
+    }
+
+    return numReported;
+};
+
+/**
+ * Narrowphase for particle vs plane
+ * @method particlePlane
+ * @param  {Body}       particleBody
+ * @param  {Particle}   particleShape
+ * @param  {Array}      particleOffset
+ * @param  {Number}     particleAngle
+ * @param  {Body}       planeBody
+ * @param  {Plane}      planeShape
+ * @param  {Array}      planeOffset
+ * @param  {Number}     planeAngle
+ * @param {Boolean}     justTest
+ */
+Narrowphase.prototype[Shape.PARTICLE | Shape.PLANE] =
+Narrowphase.prototype.particlePlane = function(
+    particleBody,
+    particleShape,
+    particleOffset,
+    particleAngle,
+    planeBody,
+    planeShape,
+    planeOffset,
+    planeAngle,
+    justTest
+){
+    var dist = tmp1,
+        worldNormal = tmp2;
+
+    planeAngle = planeAngle || 0;
+
+    sub(dist, particleOffset, planeOffset);
+    vec2.rotate(worldNormal, yAxis, planeAngle);
+
+    var d = dot(dist, worldNormal);
+
+    if(d > 0){
+        return 0;
+    }
+    if(justTest){
+        return true;
+    }
+
+    var c = this.createContactEquation(planeBody,particleBody,planeShape,particleShape);
+
+    vec2.copy(c.normalA, worldNormal);
+    vec2.scale( dist, c.normalA, d );
+    // dist is now the distance vector in the normal direction
+
+    // ri is the particle position projected down onto the plane, from the plane center
+    sub( c.contactPointA, particleOffset, dist);
+    sub( c.contactPointA, c.contactPointA, planeBody.position);
+
+    // rj is from the body center to the particle center
+    sub( c.contactPointB, particleOffset, particleBody.position );
+
+    this.contactEquations.push(c);
+
+    if(this.enableFriction){
+        this.frictionEquations.push(this.createFrictionFromContact(c));
+    }
+    return 1;
+};
+
+/**
+ * Circle/Particle Narrowphase
+ * @method circleParticle
+ * @param  {Body} circleBody
+ * @param  {Circle} circleShape
+ * @param  {Array} circleOffset
+ * @param  {Number} circleAngle
+ * @param  {Body} particleBody
+ * @param  {Particle} particleShape
+ * @param  {Array} particleOffset
+ * @param  {Number} particleAngle
+ * @param  {Boolean} justTest
+ */
+Narrowphase.prototype[Shape.CIRCLE | Shape.PARTICLE] =
+Narrowphase.prototype.circleParticle = function(
+    circleBody,
+    circleShape,
+    circleOffset,
+    circleAngle,
+    particleBody,
+    particleShape,
+    particleOffset,
+    particleAngle,
+    justTest
+){
+    var dist = tmp1;
+
+    sub(dist, particleOffset, circleOffset);
+    if(vec2.squaredLength(dist) > Math.pow(circleShape.radius, 2)){
+        return 0;
+    }
+    if(justTest){
+        return true;
+    }
+
+    var c = this.createContactEquation(circleBody,particleBody,circleShape,particleShape);
+    vec2.copy(c.normalA, dist);
+    vec2.normalize(c.normalA,c.normalA);
+
+    // Vector from circle to contact point is the normal times the circle radius
+    vec2.scale(c.contactPointA, c.normalA, circleShape.radius);
+    add(c.contactPointA, c.contactPointA, circleOffset);
+    sub(c.contactPointA, c.contactPointA, circleBody.position);
+
+    // Vector from particle center to contact point is zero
+    sub(c.contactPointB, particleOffset, particleBody.position);
+
+    this.contactEquations.push(c);
+
+    if(this.enableFriction){
+        this.frictionEquations.push(this.createFrictionFromContact(c));
+    }
+
+    return 1;
+};
+
+var planeCapsule_tmpCircle = new Circle(1),
+    planeCapsule_tmp1 = vec2.create(),
+    planeCapsule_tmp2 = vec2.create(),
+    planeCapsule_tmp3 = vec2.create();
+
+/**
+ * @method planeCapsule
+ * @param  {Body} planeBody
+ * @param  {Circle} planeShape
+ * @param  {Array} planeOffset
+ * @param  {Number} planeAngle
+ * @param  {Body} capsuleBody
+ * @param  {Particle} capsuleShape
+ * @param  {Array} capsuleOffset
+ * @param  {Number} capsuleAngle
+ * @param {Boolean} justTest
+ */
+Narrowphase.prototype[Shape.PLANE | Shape.CAPSULE] =
+Narrowphase.prototype.planeCapsule = function(
+    planeBody,
+    planeShape,
+    planeOffset,
+    planeAngle,
+    capsuleBody,
+    capsuleShape,
+    capsuleOffset,
+    capsuleAngle,
+    justTest
+){
+    var end1 = planeCapsule_tmp1,
+        end2 = planeCapsule_tmp2,
+        circle = planeCapsule_tmpCircle,
+        dst = planeCapsule_tmp3;
+
+    // Compute world end positions
+    vec2.set(end1, -capsuleShape.length/2, 0);
+    vec2.rotate(end1,end1,capsuleAngle);
+    add(end1,end1,capsuleOffset);
+
+    vec2.set(end2,  capsuleShape.length/2, 0);
+    vec2.rotate(end2,end2,capsuleAngle);
+    add(end2,end2,capsuleOffset);
+
+    circle.radius = capsuleShape.radius;
+
+    var enableFrictionBefore;
+
+    // Temporarily turn off friction
+    if(this.enableFrictionReduction){
+        enableFrictionBefore = this.enableFriction;
+        this.enableFriction = false;
+    }
+
+    // Do Narrowphase as two circles
+    var numContacts1 = this.circlePlane(capsuleBody,circle,end1,0, planeBody,planeShape,planeOffset,planeAngle, justTest),
+        numContacts2 = this.circlePlane(capsuleBody,circle,end2,0, planeBody,planeShape,planeOffset,planeAngle, justTest);
+
+    // Restore friction
+    if(this.enableFrictionReduction){
+        this.enableFriction = enableFrictionBefore;
+    }
+
+    if(justTest){
+        return numContacts1 || numContacts2;
+    } else {
+        var numTotal = numContacts1 + numContacts2;
+        if(this.enableFrictionReduction){
+            if(numTotal){
+                this.frictionEquations.push(this.createFrictionFromAverage(numTotal));
+            }
+        }
+        return numTotal;
+    }
+};
+
+/**
+ * Creates ContactEquations and FrictionEquations for a collision.
+ * @method circlePlane
+ * @param  {Body}    bi     The first body that should be connected to the equations.
+ * @param  {Circle}  si     The circle shape participating in the collision.
+ * @param  {Array}   xi     Extra offset to take into account for the Shape, in addition to the one in circleBody.position. Will *not* be rotated by circleBody.angle (maybe it should, for sake of homogenity?). Set to null if none.
+ * @param  {Body}    bj     The second body that should be connected to the equations.
+ * @param  {Plane}   sj     The Plane shape that is participating
+ * @param  {Array}   xj     Extra offset for the plane shape.
+ * @param  {Number}  aj     Extra angle to apply to the plane
+ */
+Narrowphase.prototype[Shape.CIRCLE | Shape.PLANE] =
+Narrowphase.prototype.circlePlane = function(   bi,si,xi,ai, bj,sj,xj,aj, justTest ){
+    var circleBody = bi,
+        circleShape = si,
+        circleOffset = xi, // Offset from body center, rotated!
+        planeBody = bj,
+        shapeB = sj,
+        planeOffset = xj,
+        planeAngle = aj;
+
+    planeAngle = planeAngle || 0;
+
+    // Vector from plane to circle
+    var planeToCircle = tmp1,
+        worldNormal = tmp2,
+        temp = tmp3;
+
+    sub(planeToCircle, circleOffset, planeOffset);
+
+    // World plane normal
+    vec2.rotate(worldNormal, yAxis, planeAngle);
+
+    // Normal direction distance
+    var d = dot(worldNormal, planeToCircle);
+
+    if(d > circleShape.radius){
+        return 0; // No overlap. Abort.
+    }
+
+    if(justTest){
+        return true;
+    }
+
+    // Create contact
+    var contact = this.createContactEquation(planeBody,circleBody,sj,si);
+
+    // ni is the plane world normal
+    vec2.copy(contact.normalA, worldNormal);
+
+    // rj is the vector from circle center to the contact point
+    vec2.scale(contact.contactPointB, contact.normalA, -circleShape.radius);
+    add(contact.contactPointB, contact.contactPointB, circleOffset);
+    sub(contact.contactPointB, contact.contactPointB, circleBody.position);
+
+    // ri is the distance from plane center to contact.
+    vec2.scale(temp, contact.normalA, d);
+    sub(contact.contactPointA, planeToCircle, temp ); // Subtract normal distance vector from the distance vector
+    add(contact.contactPointA, contact.contactPointA, planeOffset);
+    sub(contact.contactPointA, contact.contactPointA, planeBody.position);
+
+    this.contactEquations.push(contact);
+
+    if(this.enableFriction){
+        this.frictionEquations.push( this.createFrictionFromContact(contact) );
+    }
+
+    return 1;
+};
+
+/**
+ * Convex/convex Narrowphase.See <a href="http://www.altdevblogaday.com/2011/05/13/contact-generation-between-3d-convex-meshes/">this article</a> for more info.
+ * @method convexConvex
+ * @param  {Body} bi
+ * @param  {Convex} si
+ * @param  {Array} xi
+ * @param  {Number} ai
+ * @param  {Body} bj
+ * @param  {Convex} sj
+ * @param  {Array} xj
+ * @param  {Number} aj
+ */
+Narrowphase.prototype[Shape.CONVEX] =
+Narrowphase.prototype[Shape.CONVEX | Shape.RECTANGLE] =
+Narrowphase.prototype[Shape.RECTANGLE] =
+Narrowphase.prototype.convexConvex = function(  bi,si,xi,ai, bj,sj,xj,aj, justTest, precision ){
+    var sepAxis = tmp1,
+        worldPoint = tmp2,
+        worldPoint0 = tmp3,
+        worldPoint1 = tmp4,
+        worldEdge = tmp5,
+        projected = tmp6,
+        penetrationVec = tmp7,
+        dist = tmp8,
+        worldNormal = tmp9,
+        numContacts = 0,
+        precision = typeof(precision) === 'number' ? precision : 0;
+
+    var found = Narrowphase.findSeparatingAxis(si,xi,ai,sj,xj,aj,sepAxis);
+    if(!found){
+        return 0;
+    }
+
+    // Make sure the separating axis is directed from shape i to shape j
+    sub(dist,xj,xi);
+    if(dot(sepAxis,dist) > 0){
+        vec2.scale(sepAxis,sepAxis,-1);
+    }
+
+    // Find edges with normals closest to the separating axis
+    var closestEdge1 = Narrowphase.getClosestEdge(si,ai,sepAxis,true), // Flipped axis
+        closestEdge2 = Narrowphase.getClosestEdge(sj,aj,sepAxis);
+
+    if(closestEdge1 === -1 || closestEdge2 === -1){
+        return 0;
+    }
+
+    // Loop over the shapes
+    for(var k=0; k<2; k++){
+
+        var closestEdgeA = closestEdge1,
+            closestEdgeB = closestEdge2,
+            shapeA =  si, shapeB =  sj,
+            offsetA = xi, offsetB = xj,
+            angleA = ai, angleB = aj,
+            bodyA = bi, bodyB = bj;
+
+        if(k === 0){
+            // Swap!
+            var tmp;
+            tmp = closestEdgeA;
+            closestEdgeA = closestEdgeB;
+            closestEdgeB = tmp;
+
+            tmp = shapeA;
+            shapeA = shapeB;
+            shapeB = tmp;
+
+            tmp = offsetA;
+            offsetA = offsetB;
+            offsetB = tmp;
+
+            tmp = angleA;
+            angleA = angleB;
+            angleB = tmp;
+
+            tmp = bodyA;
+            bodyA = bodyB;
+            bodyB = tmp;
+        }
+
+        // Loop over 2 points in convex B
+        for(var j=closestEdgeB; j<closestEdgeB+2; j++){
+
+            // Get world point
+            var v = shapeB.vertices[(j+shapeB.vertices.length)%shapeB.vertices.length];
+            vec2.rotate(worldPoint, v, angleB);
+            add(worldPoint, worldPoint, offsetB);
+
+            var insideNumEdges = 0;
+
+            // Loop over the 3 closest edges in convex A
+            for(var i=closestEdgeA-1; i<closestEdgeA+2; i++){
+
+                var v0 = shapeA.vertices[(i  +shapeA.vertices.length)%shapeA.vertices.length],
+                    v1 = shapeA.vertices[(i+1+shapeA.vertices.length)%shapeA.vertices.length];
+
+                // Construct the edge
+                vec2.rotate(worldPoint0, v0, angleA);
+                vec2.rotate(worldPoint1, v1, angleA);
+                add(worldPoint0, worldPoint0, offsetA);
+                add(worldPoint1, worldPoint1, offsetA);
+
+                sub(worldEdge, worldPoint1, worldPoint0);
+
+                vec2.rotate90cw(worldNormal, worldEdge); // Normal points out of convex 1
+                vec2.normalize(worldNormal,worldNormal);
+
+                sub(dist, worldPoint, worldPoint0);
+
+                var d = dot(worldNormal,dist);
+
+                if((i === closestEdgeA && d <= precision) || (i !== closestEdgeA && d <= 0)){
+                    insideNumEdges++;
+                }
+            }
+
+            if(insideNumEdges >= 3){
+
+                if(justTest){
+                    return true;
+                }
+
+                // worldPoint was on the "inside" side of each of the 3 checked edges.
+                // Project it to the center edge and use the projection direction as normal
+
+                // Create contact
+                var c = this.createContactEquation(bodyA,bodyB,shapeA,shapeB);
+                numContacts++;
+
+                // Get center edge from body A
+                var v0 = shapeA.vertices[(closestEdgeA)   % shapeA.vertices.length],
+                    v1 = shapeA.vertices[(closestEdgeA+1) % shapeA.vertices.length];
+
+                // Construct the edge
+                vec2.rotate(worldPoint0, v0, angleA);
+                vec2.rotate(worldPoint1, v1, angleA);
+                add(worldPoint0, worldPoint0, offsetA);
+                add(worldPoint1, worldPoint1, offsetA);
+
+                sub(worldEdge, worldPoint1, worldPoint0);
+
+                vec2.rotate90cw(c.normalA, worldEdge); // Normal points out of convex A
+                vec2.normalize(c.normalA,c.normalA);
+
+                sub(dist, worldPoint, worldPoint0); // From edge point to the penetrating point
+                var d = dot(c.normalA,dist);             // Penetration
+                vec2.scale(penetrationVec, c.normalA, d);     // Vector penetration
+
+                sub(c.contactPointA, worldPoint, offsetA);
+                sub(c.contactPointA, c.contactPointA, penetrationVec);
+                add(c.contactPointA, c.contactPointA, offsetA);
+                sub(c.contactPointA, c.contactPointA, bodyA.position);
+
+                sub(c.contactPointB, worldPoint, offsetB);
+                add(c.contactPointB, c.contactPointB, offsetB);
+                sub(c.contactPointB, c.contactPointB, bodyB.position);
+
+                this.contactEquations.push(c);
+
+                // Todo reduce to 1 friction equation if we have 2 contact points
+                if(!this.enableFrictionReduction){
+                    if(this.enableFriction){
+                        this.frictionEquations.push(this.createFrictionFromContact(c));
+                    }
+                }
+            }
+        }
+    }
+
+    if(this.enableFrictionReduction){
+        if(this.enableFriction && numContacts){
+            this.frictionEquations.push(this.createFrictionFromAverage(numContacts));
+        }
+    }
+
+    return numContacts;
+};
+
+// .projectConvex is called by other functions, need local tmp vectors
+var pcoa_tmp1 = vec2.fromValues(0,0);
+
+/**
+ * Project a Convex onto a world-oriented axis
+ * @method projectConvexOntoAxis
+ * @static
+ * @param  {Convex} convexShape
+ * @param  {Array} convexOffset
+ * @param  {Number} convexAngle
+ * @param  {Array} worldAxis
+ * @param  {Array} result
+ */
+Narrowphase.projectConvexOntoAxis = function(convexShape, convexOffset, convexAngle, worldAxis, result){
+    var max=null,
+        min=null,
+        v,
+        value,
+        localAxis = pcoa_tmp1;
+
+    // Convert the axis to local coords of the body
+    vec2.rotate(localAxis, worldAxis, -convexAngle);
+
+    // Get projected position of all vertices
+    for(var i=0; i<convexShape.vertices.length; i++){
+        v = convexShape.vertices[i];
+        value = dot(v,localAxis);
+        if(max === null || value > max){
+            max = value;
+        }
+        if(min === null || value < min){
+            min = value;
+        }
+    }
+
+    if(min > max){
+        var t = min;
+        min = max;
+        max = t;
+    }
+
+    // Project the position of the body onto the axis - need to add this to the result
+    var offset = dot(convexOffset, worldAxis);
+
+    vec2.set( result, min + offset, max + offset);
+};
+
+// .findSeparatingAxis is called by other functions, need local tmp vectors
+var fsa_tmp1 = vec2.fromValues(0,0)
+,   fsa_tmp2 = vec2.fromValues(0,0)
+,   fsa_tmp3 = vec2.fromValues(0,0)
+,   fsa_tmp4 = vec2.fromValues(0,0)
+,   fsa_tmp5 = vec2.fromValues(0,0)
+,   fsa_tmp6 = vec2.fromValues(0,0);
+
+/**
+ * Find a separating axis between the shapes, that maximizes the separating distance between them.
+ * @method findSeparatingAxis
+ * @static
+ * @param  {Convex}     c1
+ * @param  {Array}      offset1
+ * @param  {Number}     angle1
+ * @param  {Convex}     c2
+ * @param  {Array}      offset2
+ * @param  {Number}     angle2
+ * @param  {Array}      sepAxis     The resulting axis
+ * @return {Boolean}                Whether the axis could be found.
+ */
+Narrowphase.findSeparatingAxis = function(c1,offset1,angle1,c2,offset2,angle2,sepAxis){
+    var maxDist = null,
+        overlap = false,
+        found = false,
+        edge = fsa_tmp1,
+        worldPoint0 = fsa_tmp2,
+        worldPoint1 = fsa_tmp3,
+        normal = fsa_tmp4,
+        span1 = fsa_tmp5,
+        span2 = fsa_tmp6;
+
+    if(c1 instanceof Rectangle && c2 instanceof Rectangle){
+
+        for(var j=0; j!==2; j++){
+            var c = c1,
+                angle = angle1;
+            if(j===1){
+                c = c2;
+                angle = angle2;
+            }
+
+            for(var i=0; i!==2; i++){
+
+                // Get the world edge
+                if(i === 0){
+                    vec2.set(normal, 0, 1);
+                } else if(i === 1) {
+                    vec2.set(normal, 1, 0);
+                }
+                if(angle !== 0){
+                    vec2.rotate(normal, normal, angle);
+                }
+
+                // Project hulls onto that normal
+                Narrowphase.projectConvexOntoAxis(c1,offset1,angle1,normal,span1);
+                Narrowphase.projectConvexOntoAxis(c2,offset2,angle2,normal,span2);
+
+                // Order by span position
+                var a=span1,
+                    b=span2,
+                    swapped = false;
+                if(span1[0] > span2[0]){
+                    b=span1;
+                    a=span2;
+                    swapped = true;
+                }
+
+                // Get separating distance
+                var dist = b[0] - a[1];
+                overlap = (dist <= 0);
+
+                if(maxDist===null || dist > maxDist){
+                    vec2.copy(sepAxis, normal);
+                    maxDist = dist;
+                    found = overlap;
+                }
+            }
+        }
+
+    } else {
+
+        for(var j=0; j!==2; j++){
+            var c = c1,
+                angle = angle1;
+            if(j===1){
+                c = c2;
+                angle = angle2;
+            }
+
+            for(var i=0; i!==c.vertices.length; i++){
+                // Get the world edge
+                vec2.rotate(worldPoint0, c.vertices[i], angle);
+                vec2.rotate(worldPoint1, c.vertices[(i+1)%c.vertices.length], angle);
+
+                sub(edge, worldPoint1, worldPoint0);
+
+                // Get normal - just rotate 90 degrees since vertices are given in CCW
+                vec2.rotate90cw(normal, edge);
+                vec2.normalize(normal,normal);
+
+                // Project hulls onto that normal
+                Narrowphase.projectConvexOntoAxis(c1,offset1,angle1,normal,span1);
+                Narrowphase.projectConvexOntoAxis(c2,offset2,angle2,normal,span2);
+
+                // Order by span position
+                var a=span1,
+                    b=span2,
+                    swapped = false;
+                if(span1[0] > span2[0]){
+                    b=span1;
+                    a=span2;
+                    swapped = true;
+                }
+
+                // Get separating distance
+                var dist = b[0] - a[1];
+                overlap = (dist <= 0);
+
+                if(maxDist===null || dist > maxDist){
+                    vec2.copy(sepAxis, normal);
+                    maxDist = dist;
+                    found = overlap;
+                }
+            }
+        }
+    }
+
+
+    /*
+    // Needs to be tested some more
+    for(var j=0; j!==2; j++){
+        var c = c1,
+            angle = angle1;
+        if(j===1){
+            c = c2;
+            angle = angle2;
+        }
+
+        for(var i=0; i!==c.axes.length; i++){
+
+            var normal = c.axes[i];
+
+            // Project hulls onto that normal
+            Narrowphase.projectConvexOntoAxis(c1, offset1, angle1, normal, span1);
+            Narrowphase.projectConvexOntoAxis(c2, offset2, angle2, normal, span2);
+
+            // Order by span position
+            var a=span1,
+                b=span2,
+                swapped = false;
+            if(span1[0] > span2[0]){
+                b=span1;
+                a=span2;
+                swapped = true;
+            }
+
+            // Get separating distance
+            var dist = b[0] - a[1];
+            overlap = (dist <= Narrowphase.convexPrecision);
+
+            if(maxDist===null || dist > maxDist){
+                vec2.copy(sepAxis, normal);
+                maxDist = dist;
+                found = overlap;
+            }
+        }
+    }
+    */
+
+    return found;
+};
+
+// .getClosestEdge is called by other functions, need local tmp vectors
+var gce_tmp1 = vec2.fromValues(0,0)
+,   gce_tmp2 = vec2.fromValues(0,0)
+,   gce_tmp3 = vec2.fromValues(0,0);
+
+/**
+ * Get the edge that has a normal closest to an axis.
+ * @method getClosestEdge
+ * @static
+ * @param  {Convex}     c
+ * @param  {Number}     angle
+ * @param  {Array}      axis
+ * @param  {Boolean}    flip
+ * @return {Number}             Index of the edge that is closest. This index and the next spans the resulting edge. Returns -1 if failed.
+ */
+Narrowphase.getClosestEdge = function(c,angle,axis,flip){
+    var localAxis = gce_tmp1,
+        edge = gce_tmp2,
+        normal = gce_tmp3;
+
+    // Convert the axis to local coords of the body
+    vec2.rotate(localAxis, axis, -angle);
+    if(flip){
+        vec2.scale(localAxis,localAxis,-1);
+    }
+
+    var closestEdge = -1,
+        N = c.vertices.length,
+        maxDot = -1;
+    for(var i=0; i!==N; i++){
+        // Get the edge
+        sub(edge, c.vertices[(i+1)%N], c.vertices[i%N]);
+
+        // Get normal - just rotate 90 degrees since vertices are given in CCW
+        vec2.rotate90cw(normal, edge);
+        vec2.normalize(normal,normal);
+
+        var d = dot(normal,localAxis);
+        if(closestEdge === -1 || d > maxDot){
+            closestEdge = i % N;
+            maxDot = d;
+        }
+    }
+
+    return closestEdge;
+};
+
+var circleHeightfield_candidate = vec2.create(),
+    circleHeightfield_dist = vec2.create(),
+    circleHeightfield_v0 = vec2.create(),
+    circleHeightfield_v1 = vec2.create(),
+    circleHeightfield_minCandidate = vec2.create(),
+    circleHeightfield_worldNormal = vec2.create(),
+    circleHeightfield_minCandidateNormal = vec2.create();
+
+/**
+ * @method circleHeightfield
+ * @param  {Body}           bi
+ * @param  {Circle}         si
+ * @param  {Array}          xi
+ * @param  {Body}           bj
+ * @param  {Heightfield}    sj
+ * @param  {Array}          xj
+ * @param  {Number}         aj
+ */
+Narrowphase.prototype[Shape.CIRCLE | Shape.HEIGHTFIELD] =
+Narrowphase.prototype.circleHeightfield = function( circleBody,circleShape,circlePos,circleAngle,
+                                                    hfBody,hfShape,hfPos,hfAngle, justTest, radius ){
+    var data = hfShape.data,
+        radius = radius || circleShape.radius,
+        w = hfShape.elementWidth,
+        dist = circleHeightfield_dist,
+        candidate = circleHeightfield_candidate,
+        minCandidate = circleHeightfield_minCandidate,
+        minCandidateNormal = circleHeightfield_minCandidateNormal,
+        worldNormal = circleHeightfield_worldNormal,
+        v0 = circleHeightfield_v0,
+        v1 = circleHeightfield_v1;
+
+    // Get the index of the points to test against
+    var idxA = Math.floor( (circlePos[0] - radius - hfPos[0]) / w ),
+        idxB = Math.ceil(  (circlePos[0] + radius - hfPos[0]) / w );
+
+    /*if(idxB < 0 || idxA >= data.length)
+        return justTest ? false : 0;*/
+
+    if(idxA < 0){
+        idxA = 0;
+    }
+    if(idxB >= data.length){
+        idxB = data.length-1;
+    }
+
+    // Get max and min
+    var max = data[idxA],
+        min = data[idxB];
+    for(var i=idxA; i<idxB; i++){
+        if(data[i] < min){
+            min = data[i];
+        }
+        if(data[i] > max){
+            max = data[i];
+        }
+    }
+
+    if(circlePos[1]-radius > max){
+        return justTest ? false : 0;
+    }
+
+    /*
+    if(circlePos[1]+radius < min){
+        // Below the minimum point... We can just guess.
+        // TODO
+    }
+    */
+
+    // 1. Check so center of circle is not inside the field. If it is, this wont work...
+    // 2. For each edge
+    // 2. 1. Get point on circle that is closest to the edge (scale normal with -radius)
+    // 2. 2. Check if point is inside.
+
+    var found = false;
+
+    // Check all edges first
+    for(var i=idxA; i<idxB; i++){
+
+        // Get points
+        vec2.set(v0,     i*w, data[i]  );
+        vec2.set(v1, (i+1)*w, data[i+1]);
+        vec2.add(v0,v0,hfPos);
+        vec2.add(v1,v1,hfPos);
+
+        // Get normal
+        vec2.sub(worldNormal, v1, v0);
+        vec2.rotate(worldNormal, worldNormal, Math.PI/2);
+        vec2.normalize(worldNormal,worldNormal);
+
+        // Get point on circle, closest to the edge
+        vec2.scale(candidate,worldNormal,-radius);
+        vec2.add(candidate,candidate,circlePos);
+
+        // Distance from v0 to the candidate point
+        vec2.sub(dist,candidate,v0);
+
+        // Check if it is in the element "stick"
+        var d = vec2.dot(dist,worldNormal);
+        if(candidate[0] >= v0[0] && candidate[0] < v1[0] && d <= 0){
+
+            if(justTest){
+                return true;
+            }
+
+            found = true;
+
+            // Store the candidate point, projected to the edge
+            vec2.scale(dist,worldNormal,-d);
+            vec2.add(minCandidate,candidate,dist);
+            vec2.copy(minCandidateNormal,worldNormal);
+
+            var c = this.createContactEquation(hfBody,circleBody,hfShape,circleShape);
+
+            // Normal is out of the heightfield
+            vec2.copy(c.normalA, minCandidateNormal);
+
+            // Vector from circle to heightfield
+            vec2.scale(c.contactPointB,  c.normalA, -radius);
+            add(c.contactPointB, c.contactPointB, circlePos);
+            sub(c.contactPointB, c.contactPointB, circleBody.position);
+
+            vec2.copy(c.contactPointA, minCandidate);
+            vec2.sub(c.contactPointA, c.contactPointA, hfBody.position);
+
+            this.contactEquations.push(c);
+
+            if(this.enableFriction){
+                this.frictionEquations.push( this.createFrictionFromContact(c) );
+            }
+        }
+    }
+
+    // Check all vertices
+    found = false;
+    if(radius > 0){
+        for(var i=idxA; i<=idxB; i++){
+
+            // Get point
+            vec2.set(v0, i*w, data[i]);
+            vec2.add(v0,v0,hfPos);
+
+            vec2.sub(dist, circlePos, v0);
+
+            if(vec2.squaredLength(dist) < Math.pow(radius, 2)){
+
+                if(justTest){
+                    return true;
+                }
+
+                found = true;
+
+                var c = this.createContactEquation(hfBody,circleBody,hfShape,circleShape);
+
+                // Construct normal - out of heightfield
+                vec2.copy(c.normalA, dist);
+                vec2.normalize(c.normalA,c.normalA);
+
+                vec2.scale(c.contactPointB, c.normalA, -radius);
+                add(c.contactPointB, c.contactPointB, circlePos);
+                sub(c.contactPointB, c.contactPointB, circleBody.position);
+
+                sub(c.contactPointA, v0, hfPos);
+                add(c.contactPointA, c.contactPointA, hfPos);
+                sub(c.contactPointA, c.contactPointA, hfBody.position);
+
+                this.contactEquations.push(c);
+
+                if(this.enableFriction){
+                    this.frictionEquations.push(this.createFrictionFromContact(c));
+                }
+            }
+        }
+    }
+
+    if(found){
+        return 1;
+    }
+
+    return 0;
+
+};
+
+var convexHeightfield_v0 = vec2.create(),
+    convexHeightfield_v1 = vec2.create(),
+    convexHeightfield_tilePos = vec2.create(),
+    convexHeightfield_tempConvexShape = new Convex([vec2.create(),vec2.create(),vec2.create(),vec2.create()]);
+/**
+ * @method circleHeightfield
+ * @param  {Body}           bi
+ * @param  {Circle}         si
+ * @param  {Array}          xi
+ * @param  {Body}           bj
+ * @param  {Heightfield}    sj
+ * @param  {Array}          xj
+ * @param  {Number}         aj
+ */
+Narrowphase.prototype[Shape.RECTANGLE | Shape.HEIGHTFIELD] =
+Narrowphase.prototype[Shape.CONVEX | Shape.HEIGHTFIELD] =
+Narrowphase.prototype.convexHeightfield = function( convexBody,convexShape,convexPos,convexAngle,
+                                                    hfBody,hfShape,hfPos,hfAngle, justTest ){
+    var data = hfShape.data,
+        w = hfShape.elementWidth,
+        v0 = convexHeightfield_v0,
+        v1 = convexHeightfield_v1,
+        tilePos = convexHeightfield_tilePos,
+        tileConvex = convexHeightfield_tempConvexShape;
+
+    // Get the index of the points to test against
+    var idxA = Math.floor( (convexBody.aabb.lowerBound[0] - hfPos[0]) / w ),
+        idxB = Math.ceil(  (convexBody.aabb.upperBound[0] - hfPos[0]) / w );
+
+    if(idxA < 0){
+        idxA = 0;
+    }
+    if(idxB >= data.length){
+        idxB = data.length-1;
+    }
+
+    // Get max and min
+    var max = data[idxA],
+        min = data[idxB];
+    for(var i=idxA; i<idxB; i++){
+        if(data[i] < min){
+            min = data[i];
+        }
+        if(data[i] > max){
+            max = data[i];
+        }
+    }
+
+    if(convexBody.aabb.lowerBound[1] > max){
+        return justTest ? false : 0;
+    }
+
+    var found = false;
+    var numContacts = 0;
+
+    // Loop over all edges
+    // TODO: If possible, construct a convex from several data points (need o check if the points make a convex shape)
+    for(var i=idxA; i<idxB; i++){
+
+        // Get points
+        vec2.set(v0,     i*w, data[i]  );
+        vec2.set(v1, (i+1)*w, data[i+1]);
+        vec2.add(v0,v0,hfPos);
+        vec2.add(v1,v1,hfPos);
+
+        // Construct a convex
+        var tileHeight = 100; // todo
+        vec2.set(tilePos, (v1[0] + v0[0])*0.5, (v1[1] + v0[1] - tileHeight)*0.5);
+
+        vec2.sub(tileConvex.vertices[0], v1, tilePos);
+        vec2.sub(tileConvex.vertices[1], v0, tilePos);
+        vec2.copy(tileConvex.vertices[2], tileConvex.vertices[1]);
+        vec2.copy(tileConvex.vertices[3], tileConvex.vertices[0]);
+        tileConvex.vertices[2][1] -= tileHeight;
+        tileConvex.vertices[3][1] -= tileHeight;
+
+        // Do convex collision
+        numContacts += this.convexConvex(   convexBody, convexShape, convexPos, convexAngle,
+                                            hfBody, tileConvex, tilePos, 0, justTest);
+    }
+
+    return numContacts;
+};
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\Narrowphase.js","/collision")
+},{"../equations/ContactEquation":26,"../equations/Equation":27,"../equations/FrictionEquation":28,"../math/vec2":35,"../objects/Body":36,"../shapes/Circle":42,"../shapes/Convex":43,"../shapes/Rectangle":48,"../shapes/Shape":49,"../utils/TupleDictionary":53,"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],16:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = Ray;
+
+var vec2 = _dereq_('../math/vec2');
+var RaycastResult = _dereq_('../collision/RaycastResult');
+var Shape = _dereq_('../shapes/Shape');
+var AABB = _dereq_('../collision/AABB');
+
+/**
+ * A line with a start and end point that is used to intersect shapes.
+ * @class Ray
+ * @constructor
+ */
+function Ray(options){
+    options = options || {};
+
+    /**
+     * @property {array} from
+     */
+    this.from = options.from ? vec2.fromValues(options.from[0], options.from[1]) : vec2.create();
+
+    /**
+     * @property {array} to
+     */
+    this.to = options.to ? vec2.fromValues(options.to[0], options.to[1]) : vec2.create();
+
+    /**
+     * @private
+     * @property {array} _direction
+     */
+    this._direction = vec2.create();
+
+    /**
+     * The precision of the ray. Used when checking parallelity etc.
+     * @property {Number} precision
+     */
+    this.precision = 0.0001;
+
+    /**
+     * Set to true if you want the Ray to take .collisionResponse flags into account on bodies and shapes.
+     * @property {Boolean} checkCollisionResponse
+     */
+    this.checkCollisionResponse = true;
+
+    /**
+     * If set to true, the ray skips any hits with normal.dot(rayDirection) < 0.
+     * @property {Boolean} skipBackfaces
+     */
+    this.skipBackfaces = false;
+
+    /**
+     * @property {number} collisionMask
+     * @default -1
+     */
+    this.collisionMask = -1;
+
+    /**
+     * @property {number} collisionGroup
+     * @default -1
+     */
+    this.collisionGroup = -1;
+
+    /**
+     * The intersection mode. Should be Ray.ANY, Ray.ALL or Ray.CLOSEST.
+     * @property {number} mode
+     */
+    this.mode = Ray.ANY;
+
+    /**
+     * Current result object.
+     * @property {RaycastResult} result
+     */
+    this.result = new RaycastResult();
+
+    /**
+     * Will be set to true during intersectWorld() if the ray hit anything.
+     * @property {Boolean} hasHit
+     */
+    this.hasHit = false;
+
+    /**
+     * Current, user-provided result callback. Will be used if mode is Ray.ALL.
+     * @property {Function} callback
+     */
+    this.callback = function(result){};
+}
+Ray.prototype.constructor = Ray;
+
+Ray.CLOSEST = 1;
+Ray.ANY = 2;
+Ray.ALL = 4;
+
+var tmpAABB = new AABB();
+var tmpArray = [];
+
+/**
+ * Do itersection against all bodies in the given World.
+ * @method intersectWorld
+ * @param  {World} world
+ * @param  {object} options
+ * @return {Boolean} True if the ray hit anything, otherwise false.
+ */
+Ray.prototype.intersectWorld = function (world, options) {
+    this.mode = options.mode || Ray.ANY;
+    this.result = options.result || new RaycastResult();
+    this.skipBackfaces = !!options.skipBackfaces;
+    this.collisionMask = typeof(options.collisionMask) !== 'undefined' ? options.collisionMask : -1;
+    this.collisionGroup = typeof(options.collisionGroup) !== 'undefined' ? options.collisionGroup : -1;
+    if(options.from){
+        vec2.copy(this.from, options.from);
+    }
+    if(options.to){
+        vec2.copy(this.to, options.to);
+    }
+    this.callback = options.callback || function(){};
+    this.hasHit = false;
+
+    this.result.reset();
+    this._updateDirection();
+
+    this.getAABB(tmpAABB);
+    tmpArray.length = 0;
+    world.broadphase.aabbQuery(world, tmpAABB, tmpArray);
+    this.intersectBodies(tmpArray);
+
+    return this.hasHit;
+};
+
+var v1 = vec2.create(),
+    v2 = vec2.create();
+
+var intersectBody_worldPosition = vec2.create();
+
+/**
+ * Shoot a ray at a body, get back information about the hit.
+ * @method intersectBody
+ * @private
+ * @param {Body} body
+ * @param {RaycastResult} [result] Deprecated - set the result property of the Ray instead.
+ */
+Ray.prototype.intersectBody = function (body, result) {
+
+    if(result){
+        this.result = result;
+        this._updateDirection();
+    }
+    var checkCollisionResponse = this.checkCollisionResponse;
+
+    if(checkCollisionResponse && !body.collisionResponse){
+        return;
+    }
+
+    // if((this.collisionGroup & body.collisionMask)===0 || (body.collisionGroup & this.collisionMask)===0){
+    //     return;
+    // }
+
+    var worldPosition = intersectBody_worldPosition;
+
+    for (var i = 0, N = body.shapes.length; i < N; i++) {
+        var shape = body.shapes[i];
+
+        if(checkCollisionResponse && !shape.collisionResponse){
+            continue; // Skip
+        }
+
+        // Get world angle and position of the shape
+        vec2.copy(worldPosition, body.shapeOffsets[i]);
+        vec2.rotate(worldPosition, worldPosition, body.angle);
+        vec2.add(worldPosition, worldPosition, body.position);
+        var worldAngle = body.shapeAngles[i] + body.angle;
+
+        this.intersectShape(
+            shape,
+            worldAngle,
+            worldPosition,
+            body
+        );
+
+        if(this.result._shouldStop){
+            break;
+        }
+    }
+};
+
+/**
+ * @method intersectBodies
+ * @param {Array} bodies An array of Body objects.
+ * @param {RaycastResult} [result] Deprecated
+ */
+Ray.prototype.intersectBodies = function (bodies, result) {
+    if(result){
+        this.result = result;
+        this._updateDirection();
+    }
+
+    for ( var i = 0, l = bodies.length; !this.result._shouldStop && i < l; i ++ ) {
+        this.intersectBody(bodies[i]);
+    }
+};
+
+/**
+ * Updates the _direction vector.
+ * @private
+ * @method _updateDirection
+ */
+Ray.prototype._updateDirection = function(){
+    var d = this._direction;
+    vec2.sub(d, this.to, this.from); // this.to.vsub(this.from, this._direction);
+    vec2.normalize(d, d); // this._direction.normalize();
+};
+
+/**
+ * @method intersectShape
+ * @private
+ * @param {Shape} shape
+ * @param {number} angle
+ * @param {array} position
+ * @param {Body} body
+ */
+Ray.prototype.intersectShape = function(shape, angle, position, body){
+    var from = this.from;
+
+
+    // Checking boundingSphere
+    var distance = distanceFromIntersection(from, this._direction, position);
+    if ( distance > shape.boundingSphereRadius ) {
+        return;
+    }
+
+    var method = this[shape.type];
+    if(method){
+        method.call(this, shape, angle, position, body);
+    }
+};
+
+var vector = vec2.create();
+var normal = vec2.create();
+var intersectPoint = vec2.create();
+
+var a = vec2.create();
+var b = vec2.create();
+var c = vec2.create();
+var d = vec2.create();
+
+var tmpRaycastResult = new RaycastResult();
+var intersectRectangle_direction = vec2.create();
+var intersectRectangle_rayStart = vec2.create();
+var intersectRectangle_worldNormalMin = vec2.create();
+var intersectRectangle_worldNormalMax = vec2.create();
+var intersectRectangle_hitPointWorld = vec2.create();
+var intersectRectangle_boxMin = vec2.create();
+var intersectRectangle_boxMax = vec2.create();
+
+/**
+ * @method intersectRectangle
+ * @private
+ * @param  {Shape} shape
+ * @param  {number} angle
+ * @param  {array} position
+ * @param  {Body} body
+ */
+Ray.prototype.intersectRectangle = function(shape, angle, position, body){
+    var tmin = -Number.MAX_VALUE;
+    var tmax = Number.MAX_VALUE;
+
+    var direction = intersectRectangle_direction;
+    var rayStart = intersectRectangle_rayStart;
+    var worldNormalMin = intersectRectangle_worldNormalMin;
+    var worldNormalMax = intersectRectangle_worldNormalMax;
+    var hitPointWorld = intersectRectangle_hitPointWorld;
+    var boxMin = intersectRectangle_boxMin;
+    var boxMax = intersectRectangle_boxMax;
+
+    vec2.set(boxMin, -shape.width * 0.5, -shape.height * 0.5);
+    vec2.set(boxMax, shape.width * 0.5, shape.height * 0.5);
+
+    // Transform the ray direction and start to local space
+    vec2.rotate(direction, this._direction, -angle);
+    body.toLocalFrame(rayStart, this.from);
+
+    if (direction[0] !== 0) {
+        var tx1 = (boxMin[0] - rayStart[0]) / direction[0];
+        var tx2 = (boxMax[0] - rayStart[0]) / direction[0];
+
+        var tminOld = tmin;
+        tmin = Math.max(tmin, Math.min(tx1, tx2));
+        if(tmin !== tminOld){
+            vec2.set(worldNormalMin, tx1 > tx2 ? 1 : -1, 0);
+        }
+
+        var tmaxOld = tmax;
+        tmax = Math.min(tmax, Math.max(tx1, tx2));
+        if(tmax !== tmaxOld){
+            vec2.set(worldNormalMax, tx1 < tx2 ? 1 : -1, 0);
+        }
+    }
+
+    if (direction[1] !== 0) {
+        var ty1 = (boxMin[1] - rayStart[1]) / direction[1];
+        var ty2 = (boxMax[1] - rayStart[1]) / direction[1];
+
+        var tminOld = tmin;
+        tmin = Math.max(tmin, Math.min(ty1, ty2));
+        if(tmin !== tminOld){
+            vec2.set(worldNormalMin, 0, ty1 > ty2 ? 1 : -1);
+        }
+
+        var tmaxOld = tmax;
+        tmax = Math.min(tmax, Math.max(ty1, ty2));
+        if(tmax !== tmaxOld){
+            vec2.set(worldNormalMax, 0, ty1 < ty2 ? 1 : -1);
+        }
+    }
+
+    if(tmax >= tmin){
+        // Hit point
+        vec2.set(
+            hitPointWorld,
+            rayStart[0] + direction[0] * tmin,
+            rayStart[1] + direction[1] * tmin
+        );
+
+        vec2.rotate(worldNormalMin, worldNormalMin, angle);
+
+        body.toWorldFrame(hitPointWorld, hitPointWorld);
+
+        this.reportIntersection(worldNormalMin, hitPointWorld, shape, body, -1);
+        if(this._shouldStop){
+            return;
+        }
+
+        vec2.rotate(worldNormalMax, worldNormalMax, angle);
+
+        // Hit point
+        vec2.set(
+            hitPointWorld,
+            rayStart[0] + direction[0] * tmax,
+            rayStart[1] + direction[1] * tmax
+        );
+        body.toWorldFrame(hitPointWorld, hitPointWorld);
+
+        this.reportIntersection(worldNormalMax, hitPointWorld, shape, body, -1);
+    }
+};
+Ray.prototype[Shape.RECTANGLE] = Ray.prototype.intersectRectangle;
+
+var intersectPlane_planePointToFrom = vec2.create();
+var intersectPlane_dir_scaled_with_t = vec2.create();
+var intersectPlane_hitPointWorld = vec2.create();
+var intersectPlane_worldNormal = vec2.create();
+var intersectPlane_len = vec2.create();
+
+/**
+ * @method intersectPlane
+ * @private
+ * @param  {Shape} shape
+ * @param  {number} angle
+ * @param  {array} position
+ * @param  {Body} body
+ */
+Ray.prototype.intersectPlane = function(shape, angle, position, body){
+    var from = this.from;
+    var to = this.to;
+    var direction = this._direction;
+
+    var planePointToFrom = intersectPlane_planePointToFrom;
+    var dir_scaled_with_t = intersectPlane_dir_scaled_with_t;
+    var hitPointWorld = intersectPlane_hitPointWorld;
+    var worldNormal = intersectPlane_worldNormal;
+    var len = intersectPlane_len;
+
+    // Get plane normal
+    vec2.set(worldNormal, 0, 1);
+    vec2.rotate(worldNormal, worldNormal, angle);
+
+    vec2.sub(len, from, position); //from.vsub(position, len);
+    var planeToFrom = vec2.dot(len, worldNormal); // len.dot(worldNormal);
+    vec2.sub(len, to, position); // to.vsub(position, len);
+    var planeToTo = vec2.dot(len, worldNormal); // len.dot(worldNormal);
+
+    if(planeToFrom * planeToTo > 0){
+        // "from" and "to" are on the same side of the plane... bail out
+        return;
+    }
+
+    if(vec2.distance(from, to) /* from.distanceTo(to) */ < planeToFrom){
+        return;
+    }
+
+    var n_dot_dir = vec2.dot(worldNormal, direction); // worldNormal.dot(direction);
+
+    // if (Math.abs(n_dot_dir) < this.precision) {
+    //     // No intersection
+    //     return;
+    // }
+
+    vec2.sub(planePointToFrom, from, position); // from.vsub(position, planePointToFrom);
+    var t = -vec2.dot(worldNormal, planePointToFrom) / n_dot_dir; // - worldNormal.dot(planePointToFrom) / n_dot_dir;
+    vec2.scale(dir_scaled_with_t, direction, t); // direction.scale(t, dir_scaled_with_t);
+    vec2.add(hitPointWorld, from, dir_scaled_with_t); // from.vadd(dir_scaled_with_t, hitPointWorld);
+
+    this.reportIntersection(worldNormal, hitPointWorld, shape, body, -1);
+};
+Ray.prototype[Shape.PLANE] = Ray.prototype.intersectPlane;
+
+var Ray_intersectSphere_intersectionPoint = vec2.create();
+var Ray_intersectSphere_normal = vec2.create();
+Ray.prototype.intersectCircle = function(shape, angle, position, body){
+    var from = this.from,
+        to = this.to,
+        r = shape.radius;
+
+    var a = Math.pow(to[0] - from[0], 2) + Math.pow(to[1] - from[1], 2);
+    var b = 2 * ((to[0] - from[0]) * (from[0] - position[0]) + (to[1] - from[1]) * (from[1] - position[1]));
+    var c = Math.pow(from[0] - position[0], 2) + Math.pow(from[1] - position[1], 2) - Math.pow(r, 2);
+
+    var delta = Math.pow(b, 2) - 4 * a * c;
+
+    var intersectionPoint = Ray_intersectSphere_intersectionPoint;
+    var normal = Ray_intersectSphere_normal;
+
+    if(delta < 0){
+        // No intersection
+        return;
+
+    } else if(delta === 0){
+        // single intersection point
+        vec2.lerp(intersectionPoint, from, to, delta); // from.lerp(to, delta, intersectionPoint);
+
+        vec2.sub(normal, intersectionPoint, position); // intersectionPoint.vsub(position, normal);
+        vec2.normalize(normal,normal); //normal.normalize();
+
+        this.reportIntersection(normal, intersectionPoint, shape, body, -1);
+
+    } else {
+        var d1 = (- b - Math.sqrt(delta)) / (2 * a);
+        var d2 = (- b + Math.sqrt(delta)) / (2 * a);
+
+        vec2.lerp(intersectionPoint, from, to, d1); // from.lerp(to, d1, intersectionPoint);
+
+        vec2.sub(normal, intersectionPoint, position); // intersectionPoint.vsub(position, normal);
+        vec2.normalize(normal,normal); //normal.normalize();
+
+        this.reportIntersection(normal, intersectionPoint, shape, body, -1);
+
+        if(this.result._shouldStop){
+            return;
+        }
+
+        vec2.lerp(intersectionPoint, from, to, d2); // from.lerp(to, d2, intersectionPoint);
+
+        vec2.sub(normal, intersectionPoint, position); // intersectionPoint.vsub(position, normal);
+        vec2.normalize(normal,normal); //normal.normalize();
+
+        this.reportIntersection(normal, intersectionPoint, shape, body, -1);
+    }
+};
+Ray.prototype[Shape.CIRCLE] = Ray.prototype.intersectCircle;
+
+/**
+ * Get the AABB of the ray.
+ * @method getAABB
+ * @param  {AABB} aabb
+ */
+Ray.prototype.getAABB = function(result){
+    var to = this.to;
+    var from = this.from;
+    result.lowerBound[0] = Math.min(to[0], from[0]);
+    result.lowerBound[1] = Math.min(to[1], from[1]);
+    result.upperBound[0] = Math.max(to[0], from[0]);
+    result.upperBound[1] = Math.max(to[1], from[1]);
+};
+
+/**
+ * @method reportIntersection
+ * @private
+ * @param  {array} normal
+ * @param  {array} hitPointWorld
+ * @param  {Shape} shape
+ * @param  {Body} body
+ * @return {boolean} True if the intersections should continue
+ */
+Ray.prototype.reportIntersection = function(normal, hitPointWorld, shape, body, hitFaceIndex){
+    var from = this.from;
+    var to = this.to;
+    var distance = vec2.distance(from, hitPointWorld); // from.distanceTo(hitPointWorld);
+    var result = this.result;
+
+    // Skip back faces?
+    if(this.skipBackfaces && /* normal.dot(this._direction) */ vec2.dot(normal, this._direction) > 0){
+        return;
+    }
+
+    result.hitFaceIndex = typeof(hitFaceIndex) !== 'undefined' ? hitFaceIndex : -1;
+
+    switch(this.mode){
+    case Ray.ALL:
+        this.hasHit = true;
+        result.set(
+            from,
+            to,
+            normal,
+            hitPointWorld,
+            shape,
+            body,
+            distance
+        );
+        result.hasHit = true;
+        this.callback(result);
+        break;
+
+    case Ray.CLOSEST:
+
+        // Store if closer than current closest
+        if(distance < result.distance || !result.hasHit){
+            this.hasHit = true;
+            result.hasHit = true;
+            result.set(
+                from,
+                to,
+                normal,
+                hitPointWorld,
+                shape,
+                body,
+                distance
+            );
+        }
+        break;
+
+    case Ray.ANY:
+
+        // Report and stop.
+        this.hasHit = true;
+        result.hasHit = true;
+        result.set(
+            from,
+            to,
+            normal,
+            hitPointWorld,
+            shape,
+            body,
+            distance
+        );
+        result._shouldStop = true;
+        break;
+    }
+};
+
+var v0 = vec2.create(),
+    intersect = vec2.create();
+function distanceFromIntersection(from, direction, position) {
+
+    // v0 is vector from from to position
+    vec2.sub(v0, position, from); // position.vsub(from,v0);
+    var dot = vec2.dot(v0, direction); // v0.dot(direction);
+
+    // intersect = direction*dot + from
+    vec2.scale(intersect, direction, dot); //direction.mult(dot,intersect);
+    vec2.add(intersect, intersect, from); // intersect.vadd(from, intersect);
+
+    var distance = vec2.distance(position, intersect); // position.distanceTo(intersect);
+
+    return distance;
+}
+
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\Ray.js","/collision")
+},{"../collision/AABB":11,"../collision/RaycastResult":17,"../math/vec2":35,"../shapes/Shape":49,"Zbi7gb":4,"buffer":1}],17:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2');
+
+module.exports = RaycastResult;
+
+/**
+ * Storage for Ray casting data.
+ * @class RaycastResult
+ * @constructor
+ */
+function RaycastResult(){
+
+	/**
+	 * @property {array} rayFromWorld
+	 */
+	this.rayFromWorld = vec2.create();
+
+	/**
+	 * @property {array} rayToWorld
+	 */
+	this.rayToWorld = vec2.create();
+
+	/**
+	 * @property {array} hitNormalWorld
+	 */
+	this.hitNormalWorld = vec2.create();
+
+	/**
+	 * @property {array} hitPointWorld
+	 */
+	this.hitPointWorld = vec2.create();
+
+	/**
+	 * @property {boolean} hasHit
+	 */
+	this.hasHit = false;
+
+	/**
+	 * The hit shape, or null.
+	 * @property {Shape} shape
+	 */
+	this.shape = null;
+
+	/**
+	 * The hit body, or null.
+	 * @property {Body} body
+	 */
+	this.body = null;
+
+	/**
+	 * The index of the hit triangle, if the hit shape was a trimesh.
+	 * @property {number} hitFaceIndex
+	 * @default -1
+	 */
+	this.hitFaceIndex = -1;
+
+	/**
+	 * Distance to the hit. Will be set to -1 if there was no hit.
+	 * @property {number} distance
+	 * @default -1
+	 */
+	this.distance = -1;
+
+	/**
+	 * If the ray should stop traversing the bodies.
+	 * @private
+	 * @property {Boolean} _shouldStop
+	 * @default false
+	 */
+	this._shouldStop = false;
+}
+
+/**
+ * Reset all result data.
+ * @method reset
+ */
+RaycastResult.prototype.reset = function () {
+	vec2.set(this.rayFromWorld, 0, 0);
+	vec2.set(this.rayToWorld, 0, 0);
+	vec2.set(this.hitNormalWorld, 0, 0);
+	vec2.set(this.hitPointWorld, 0, 0);
+	this.hasHit = false;
+	this.shape = null;
+	this.body = null;
+	this.hitFaceIndex = -1;
+	this.distance = -1;
+	this._shouldStop = false;
+};
+
+/**
+ * @method abort
+ */
+RaycastResult.prototype.abort = function(){
+	this._shouldStop = true;
+};
+
+/**
+ * @method set
+ * @param {array} rayFromWorld
+ * @param {array} rayToWorld
+ * @param {array} hitNormalWorld
+ * @param {array} hitPointWorld
+ * @param {Shape} shape
+ * @param {Body} body
+ * @param {number} distance
+ */
+RaycastResult.prototype.set = function(
+	rayFromWorld,
+	rayToWorld,
+	hitNormalWorld,
+	hitPointWorld,
+	shape,
+	body,
+	distance
+){
+	vec2.copy(this.rayFromWorld, rayFromWorld);
+	vec2.copy(this.rayToWorld, rayToWorld);
+	vec2.copy(this.hitNormalWorld, hitNormalWorld);
+	vec2.copy(this.hitPointWorld, hitPointWorld);
+	this.shape = shape;
+	this.body = body;
+	this.distance = distance;
+};
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\RaycastResult.js","/collision")
+},{"../math/vec2":35,"Zbi7gb":4,"buffer":1}],18:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Utils = _dereq_('../utils/Utils')
+,   Broadphase = _dereq_('../collision/Broadphase');
+
+module.exports = SAPBroadphase;
+
+/**
+ * Sweep and prune broadphase along one axis.
+ *
+ * @class SAPBroadphase
+ * @constructor
+ * @extends Broadphase
+ */
+function SAPBroadphase(){
+    Broadphase.call(this,Broadphase.SAP);
+
+    /**
+     * List of bodies currently in the broadphase.
+     * @property axisList
+     * @type {Array}
+     */
+    this.axisList = [];
+
+    /**
+     * The axis to sort along. 0 means x-axis and 1 y-axis. If your bodies are more spread out over the X axis, set axisIndex to 0, and you will gain some performance.
+     * @property axisIndex
+     * @type {Number}
+     */
+    this.axisIndex = 0;
+
+    var that = this;
+    this._addBodyHandler = function(e){
+        that.axisList.push(e.body);
+    };
+
+    this._removeBodyHandler = function(e){
+        // Remove from list
+        var idx = that.axisList.indexOf(e.body);
+        if(idx !== -1){
+            that.axisList.splice(idx,1);
+        }
+    };
+}
+SAPBroadphase.prototype = new Broadphase();
+SAPBroadphase.prototype.constructor = SAPBroadphase;
+
+/**
+ * Change the world
+ * @method setWorld
+ * @param {World} world
+ */
+SAPBroadphase.prototype.setWorld = function(world){
+    // Clear the old axis array
+    this.axisList.length = 0;
+
+    // Add all bodies from the new world
+    Utils.appendArray(this.axisList, world.bodies);
+
+    // Remove old handlers, if any
+    world
+        .off("addBody",this._addBodyHandler)
+        .off("removeBody",this._removeBodyHandler);
+
+    // Add handlers to update the list of bodies.
+    world.on("addBody",this._addBodyHandler).on("removeBody",this._removeBodyHandler);
+
+    this.world = world;
+};
+
+/**
+ * Sorts bodies along an axis.
+ * @method sortAxisList
+ * @param {Array} a
+ * @param {number} axisIndex
+ * @return {Array}
+ */
+SAPBroadphase.sortAxisList = function(a, axisIndex){
+    axisIndex = axisIndex|0;
+    for(var i=1,l=a.length; i<l; i++) {
+        var v = a[i];
+        for(var j=i - 1;j>=0;j--) {
+            if(a[j].aabb.lowerBound[axisIndex] <= v.aabb.lowerBound[axisIndex]){
+                break;
+            }
+            a[j+1] = a[j];
+        }
+        a[j+1] = v;
+    }
+    return a;
+};
+
+SAPBroadphase.prototype.sortList = function(){
+    var bodies = this.axisList,
+    axisIndex = this.axisIndex;
+
+    // Sort the lists
+    SAPBroadphase.sortAxisList(bodies, axisIndex);
+};
+
+/**
+ * Get the colliding pairs
+ * @method getCollisionPairs
+ * @param  {World} world
+ * @return {Array}
+ */
+SAPBroadphase.prototype.getCollisionPairs = function(world){
+    var bodies = this.axisList,
+        result = this.result,
+        axisIndex = this.axisIndex;
+
+    result.length = 0;
+
+    // Update all AABBs if needed
+    var l = bodies.length;
+    while(l--){
+        var b = bodies[l];
+        if(b.aabbNeedsUpdate){
+            b.updateAABB();
+        }
+    }
+
+    // Sort the lists
+    this.sortList();
+
+    // Look through the X list
+    for(var i=0, N=bodies.length|0; i!==N; i++){
+        var bi = bodies[i];
+
+        for(var j=i+1; j<N; j++){
+            var bj = bodies[j];
+
+            // Bounds overlap?
+            var overlaps = (bj.aabb.lowerBound[axisIndex] <= bi.aabb.upperBound[axisIndex]);
+            if(!overlaps){
+                break;
+            }
+
+            if(Broadphase.canCollide(bi,bj) && this.boundingVolumeCheck(bi,bj)){
+                result.push(bi,bj);
+            }
+        }
+    }
+
+    return result;
+};
+
+/**
+ * Returns all the bodies within an AABB.
+ * @method aabbQuery
+ * @param  {World} world
+ * @param  {AABB} aabb
+ * @param {array} result An array to store resulting bodies in.
+ * @return {array}
+ */
+SAPBroadphase.prototype.aabbQuery = function(world, aabb, result){
+    result = result || [];
+
+    this.sortList();
+
+    var axisIndex = this.axisIndex;
+    var axis = 'x';
+    if(axisIndex === 1){ axis = 'y'; }
+    if(axisIndex === 2){ axis = 'z'; }
+
+    var axisList = this.axisList;
+    var lower = aabb.lowerBound[axis];
+    var upper = aabb.upperBound[axis];
+    for(var i = 0; i < axisList.length; i++){
+        var b = axisList[i];
+
+        if(b.aabbNeedsUpdate){
+            b.updateAABB();
+        }
+
+        if(b.aabb.overlaps(aabb)){
+            result.push(b);
+        }
+    }
+
+    return result;
+};
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/collision\\SAPBroadphase.js","/collision")
+},{"../collision/Broadphase":12,"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],19:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = Constraint;
+
+var Utils = _dereq_('../utils/Utils');
+
+/**
+ * Base constraint class.
+ *
+ * @class Constraint
+ * @constructor
+ * @author schteppe
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Number} type
+ * @param {Object} [options]
+ * @param {Object} [options.collideConnected=true]
+ */
+function Constraint(bodyA, bodyB, type, options){
+
+    /**
+     * The type of constraint. May be one of Constraint.DISTANCE, Constraint.GEAR, Constraint.LOCK, Constraint.PRISMATIC or Constraint.REVOLUTE.
+     * @property {number} type
+     */
+    this.type = type;
+
+    options = Utils.defaults(options,{
+        collideConnected : true,
+        wakeUpBodies : true,
+    });
+
+    /**
+     * Equations to be solved in this constraint
+     *
+     * @property equations
+     * @type {Array}
+     */
+    this.equations = [];
+
+    /**
+     * First body participating in the constraint.
+     * @property bodyA
+     * @type {Body}
+     */
+    this.bodyA = bodyA;
+
+    /**
+     * Second body participating in the constraint.
+     * @property bodyB
+     * @type {Body}
+     */
+    this.bodyB = bodyB;
+
+    /**
+     * Set to true if you want the connected bodies to collide.
+     * @property collideConnected
+     * @type {Boolean}
+     * @default true
+     */
+    this.collideConnected = options.collideConnected;
+
+    // Wake up bodies when connected
+    if(options.wakeUpBodies){
+        if(bodyA){
+            bodyA.wakeUp();
+        }
+        if(bodyB){
+            bodyB.wakeUp();
+        }
+    }
+}
+
+/**
+ * Updates the internal constraint parameters before solve.
+ * @method update
+ */
+Constraint.prototype.update = function(){
+    throw new Error("method update() not implmemented in this Constraint subclass!");
+};
+
+/**
+ * @static
+ * @property {number} DISTANCE
+ */
+Constraint.DISTANCE = 1;
+
+/**
+ * @static
+ * @property {number} GEAR
+ */
+Constraint.GEAR = 2;
+
+/**
+ * @static
+ * @property {number} LOCK
+ */
+Constraint.LOCK = 3;
+
+/**
+ * @static
+ * @property {number} PRISMATIC
+ */
+Constraint.PRISMATIC = 4;
+
+/**
+ * @static
+ * @property {number} REVOLUTE
+ */
+Constraint.REVOLUTE = 5;
+
+/**
+ * Set stiffness for this constraint.
+ * @method setStiffness
+ * @param {Number} stiffness
+ */
+Constraint.prototype.setStiffness = function(stiffness){
+    var eqs = this.equations;
+    for(var i=0; i !== eqs.length; i++){
+        var eq = eqs[i];
+        eq.stiffness = stiffness;
+        eq.needsUpdate = true;
+    }
+};
+
+/**
+ * Set relaxation for this constraint.
+ * @method setRelaxation
+ * @param {Number} relaxation
+ */
+Constraint.prototype.setRelaxation = function(relaxation){
+    var eqs = this.equations;
+    for(var i=0; i !== eqs.length; i++){
+        var eq = eqs[i];
+        eq.relaxation = relaxation;
+        eq.needsUpdate = true;
+    }
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/constraints\\Constraint.js","/constraints")
+},{"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],20:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Constraint = _dereq_('./Constraint')
+,   Equation = _dereq_('../equations/Equation')
+,   vec2 = _dereq_('../math/vec2')
+,   Utils = _dereq_('../utils/Utils');
+
+module.exports = DistanceConstraint;
+
+/**
+ * Constraint that tries to keep the distance between two bodies constant.
+ *
+ * @class DistanceConstraint
+ * @constructor
+ * @author schteppe
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {object} [options]
+ * @param {number} [options.distance] The distance to keep between the anchor points. Defaults to the current distance between the bodies.
+ * @param {Array} [options.localAnchorA] The anchor point for bodyA, defined locally in bodyA frame. Defaults to [0,0].
+ * @param {Array} [options.localAnchorB] The anchor point for bodyB, defined locally in bodyB frame. Defaults to [0,0].
+ * @param {object} [options.maxForce=Number.MAX_VALUE] Maximum force to apply.
+ * @extends Constraint
+ *
+ * @example
+ *     // If distance is not given as an option, then the current distance between the bodies is used.
+ *     // In this example, the bodies will be constrained to have a distance of 2 between their centers.
+ *     var bodyA = new Body({ mass: 1, position: [-1, 0] });
+ *     var bodyB = new Body({ mass: 1, position: [1, 0] });
+ *     var constraint = new DistanceConstraint(bodyA, bodyB);
+ *
+ * @example
+ *     var constraint = new DistanceConstraint(bodyA, bodyB, {
+ *         distance: 1,          // Distance to keep between the points
+ *         localAnchorA: [1, 0], // Point on bodyA
+ *         localAnchorB: [-1, 0] // Point on bodyB
+ *     });
+ */
+function DistanceConstraint(bodyA,bodyB,options){
+    options = Utils.defaults(options,{
+        localAnchorA:[0,0],
+        localAnchorB:[0,0]
+    });
+
+    Constraint.call(this,bodyA,bodyB,Constraint.DISTANCE,options);
+
+    /**
+     * Local anchor in body A.
+     * @property localAnchorA
+     * @type {Array}
+     */
+    this.localAnchorA = vec2.fromValues(options.localAnchorA[0], options.localAnchorA[1]);
+
+    /**
+     * Local anchor in body B.
+     * @property localAnchorB
+     * @type {Array}
+     */
+    this.localAnchorB = vec2.fromValues(options.localAnchorB[0], options.localAnchorB[1]);
+
+    var localAnchorA = this.localAnchorA;
+    var localAnchorB = this.localAnchorB;
+
+    /**
+     * The distance to keep.
+     * @property distance
+     * @type {Number}
+     */
+    this.distance = 0;
+
+    if(typeof(options.distance) === 'number'){
+        this.distance = options.distance;
+    } else {
+        // Use the current world distance between the world anchor points.
+        var worldAnchorA = vec2.create(),
+            worldAnchorB = vec2.create(),
+            r = vec2.create();
+
+        // Transform local anchors to world
+        vec2.rotate(worldAnchorA, localAnchorA, bodyA.angle);
+        vec2.rotate(worldAnchorB, localAnchorB, bodyB.angle);
+
+        vec2.add(r, bodyB.position, worldAnchorB);
+        vec2.sub(r, r, worldAnchorA);
+        vec2.sub(r, r, bodyA.position);
+
+        this.distance = vec2.length(r);
+    }
+
+    var maxForce;
+    if(typeof(options.maxForce)==="undefined" ){
+        maxForce = Number.MAX_VALUE;
+    } else {
+        maxForce = options.maxForce;
+    }
+
+    var normal = new Equation(bodyA,bodyB,-maxForce,maxForce); // Just in the normal direction
+    this.equations = [ normal ];
+
+    /**
+     * Max force to apply.
+     * @property {number} maxForce
+     */
+    this.maxForce = maxForce;
+
+    // g = (xi - xj).dot(n)
+    // dg/dt = (vi - vj).dot(n) = G*W = [n 0 -n 0] * [vi wi vj wj]'
+
+    // ...and if we were to include offset points (TODO for now):
+    // g =
+    //      (xj + rj - xi - ri).dot(n) - distance
+    //
+    // dg/dt =
+    //      (vj + wj x rj - vi - wi x ri).dot(n) =
+    //      { term 2 is near zero } =
+    //      [-n   -ri x n   n   rj x n] * [vi wi vj wj]' =
+    //      G * W
+    //
+    // => G = [-n -rixn n rjxn]
+
+    var r = vec2.create();
+    var ri = vec2.create(); // worldAnchorA
+    var rj = vec2.create(); // worldAnchorB
+    var that = this;
+    normal.computeGq = function(){
+        var bodyA = this.bodyA,
+            bodyB = this.bodyB,
+            xi = bodyA.position,
+            xj = bodyB.position;
+
+        // Transform local anchors to world
+        vec2.rotate(ri, localAnchorA, bodyA.angle);
+        vec2.rotate(rj, localAnchorB, bodyB.angle);
+
+        vec2.add(r, xj, rj);
+        vec2.sub(r, r, ri);
+        vec2.sub(r, r, xi);
+
+        //vec2.sub(r, bodyB.position, bodyA.position);
+        return vec2.length(r) - that.distance;
+    };
+
+    // Make the contact constraint bilateral
+    this.setMaxForce(maxForce);
+
+    /**
+     * If the upper limit is enabled or not.
+     * @property {Boolean} upperLimitEnabled
+     */
+    this.upperLimitEnabled = false;
+
+    /**
+     * The upper constraint limit.
+     * @property {number} upperLimit
+     */
+    this.upperLimit = 1;
+
+    /**
+     * If the lower limit is enabled or not.
+     * @property {Boolean} lowerLimitEnabled
+     */
+    this.lowerLimitEnabled = false;
+
+    /**
+     * The lower constraint limit.
+     * @property {number} lowerLimit
+     */
+    this.lowerLimit = 0;
+
+    /**
+     * Current constraint position. This is equal to the current distance between the world anchor points.
+     * @property {number} position
+     */
+    this.position = 0;
+}
+DistanceConstraint.prototype = new Constraint();
+DistanceConstraint.prototype.constructor = DistanceConstraint;
+
+/**
+ * Update the constraint equations. Should be done if any of the bodies changed position, before solving.
+ * @method update
+ */
+var n = vec2.create();
+var ri = vec2.create(); // worldAnchorA
+var rj = vec2.create(); // worldAnchorB
+DistanceConstraint.prototype.update = function(){
+    var normal = this.equations[0],
+        bodyA = this.bodyA,
+        bodyB = this.bodyB,
+        distance = this.distance,
+        xi = bodyA.position,
+        xj = bodyB.position,
+        normalEquation = this.equations[0],
+        G = normal.G;
+
+    // Transform local anchors to world
+    vec2.rotate(ri, this.localAnchorA, bodyA.angle);
+    vec2.rotate(rj, this.localAnchorB, bodyB.angle);
+
+    // Get world anchor points and normal
+    vec2.add(n, xj, rj);
+    vec2.sub(n, n, ri);
+    vec2.sub(n, n, xi);
+    this.position = vec2.length(n);
+
+    var violating = false;
+    if(this.upperLimitEnabled){
+        if(this.position > this.upperLimit){
+            normalEquation.maxForce = 0;
+            normalEquation.minForce = -this.maxForce;
+            this.distance = this.upperLimit;
+            violating = true;
+        }
+    }
+
+    if(this.lowerLimitEnabled){
+        if(this.position < this.lowerLimit){
+            normalEquation.maxForce = this.maxForce;
+            normalEquation.minForce = 0;
+            this.distance = this.lowerLimit;
+            violating = true;
+        }
+    }
+
+    if((this.lowerLimitEnabled || this.upperLimitEnabled) && !violating){
+        // No constraint needed.
+        normalEquation.enabled = false;
+        return;
+    }
+
+    normalEquation.enabled = true;
+
+    vec2.normalize(n,n);
+
+    // Caluclate cross products
+    var rixn = vec2.crossLength(ri, n),
+        rjxn = vec2.crossLength(rj, n);
+
+    // G = [-n -rixn n rjxn]
+    G[0] = -n[0];
+    G[1] = -n[1];
+    G[2] = -rixn;
+    G[3] = n[0];
+    G[4] = n[1];
+    G[5] = rjxn;
+};
+
+/**
+ * Set the max force to be used
+ * @method setMaxForce
+ * @param {Number} f
+ */
+DistanceConstraint.prototype.setMaxForce = function(f){
+    var normal = this.equations[0];
+    normal.minForce = -f;
+    normal.maxForce =  f;
+};
+
+/**
+ * Get the max force
+ * @method getMaxForce
+ * @return {Number}
+ */
+DistanceConstraint.prototype.getMaxForce = function(f){
+    var normal = this.equations[0];
+    return normal.maxForce;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/constraints\\DistanceConstraint.js","/constraints")
+},{"../equations/Equation":27,"../math/vec2":35,"../utils/Utils":54,"./Constraint":19,"Zbi7gb":4,"buffer":1}],21:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Constraint = _dereq_('./Constraint')
+,   Equation = _dereq_('../equations/Equation')
+,   AngleLockEquation = _dereq_('../equations/AngleLockEquation')
+,   vec2 = _dereq_('../math/vec2');
+
+module.exports = GearConstraint;
+
+/**
+ * Connects two bodies at given offset points, letting them rotate relative to each other around this point.
+ * @class GearConstraint
+ * @constructor
+ * @author schteppe
+ * @param {Body}            bodyA
+ * @param {Body}            bodyB
+ * @param {Object}          [options]
+ * @param {Number}          [options.angle=0] Relative angle between the bodies. Will be set to the current angle between the bodies (the gear ratio is accounted for).
+ * @param {Number}          [options.ratio=1] Gear ratio.
+ * @param {Number}          [options.maxTorque] Maximum torque to apply.
+ * @extends Constraint
+ * @todo Ability to specify world points
+ */
+function GearConstraint(bodyA, bodyB, options){
+    options = options || {};
+
+    Constraint.call(this, bodyA, bodyB, Constraint.GEAR, options);
+
+    /**
+     * The gear ratio.
+     * @property ratio
+     * @type {Number}
+     */
+    this.ratio = typeof(options.ratio) === "number" ? options.ratio : 1;
+
+    /**
+     * The relative angle
+     * @property angle
+     * @type {Number}
+     */
+    this.angle = typeof(options.angle) === "number" ? options.angle : bodyB.angle - this.ratio * bodyA.angle;
+
+    // Send same parameters to the equation
+    options.angle = this.angle;
+    options.ratio = this.ratio;
+
+    this.equations = [
+        new AngleLockEquation(bodyA,bodyB,options),
+    ];
+
+    // Set max torque
+    if(typeof(options.maxTorque) === "number"){
+        this.setMaxTorque(options.maxTorque);
+    }
+}
+GearConstraint.prototype = new Constraint();
+GearConstraint.prototype.constructor = GearConstraint;
+
+GearConstraint.prototype.update = function(){
+    var eq = this.equations[0];
+    if(eq.ratio !== this.ratio){
+        eq.setRatio(this.ratio);
+    }
+    eq.angle = this.angle;
+};
+
+/**
+ * Set the max torque for the constraint.
+ * @method setMaxTorque
+ * @param {Number} torque
+ */
+GearConstraint.prototype.setMaxTorque = function(torque){
+    this.equations[0].setMaxTorque(torque);
+};
+
+/**
+ * Get the max torque for the constraint.
+ * @method getMaxTorque
+ * @return {Number}
+ */
+GearConstraint.prototype.getMaxTorque = function(torque){
+    return this.equations[0].maxForce;
+};
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/constraints\\GearConstraint.js","/constraints")
+},{"../equations/AngleLockEquation":25,"../equations/Equation":27,"../math/vec2":35,"./Constraint":19,"Zbi7gb":4,"buffer":1}],22:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Constraint = _dereq_('./Constraint')
+,   vec2 = _dereq_('../math/vec2')
+,   Equation = _dereq_('../equations/Equation');
+
+module.exports = LockConstraint;
+
+/**
+ * Locks the relative position between two bodies.
+ *
+ * @class LockConstraint
+ * @constructor
+ * @author schteppe
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Object} [options]
+ * @param {Array}  [options.localOffsetB] The offset of bodyB in bodyA's frame. If not given the offset is computed from current positions.
+ * @param {number} [options.localAngleB] The angle of bodyB in bodyA's frame. If not given, the angle is computed from current angles.
+ * @param {number} [options.maxForce]
+ * @extends Constraint
+ */
+function LockConstraint(bodyA, bodyB, options){
+    options = options || {};
+
+    Constraint.call(this,bodyA,bodyB,Constraint.LOCK,options);
+
+    var maxForce = ( typeof(options.maxForce)==="undefined" ? Number.MAX_VALUE : options.maxForce );
+
+    var localAngleB = options.localAngleB || 0;
+
+    // Use 3 equations:
+    // gx =   (xj - xi - l) * xhat = 0
+    // gy =   (xj - xi - l) * yhat = 0
+    // gr =   (xi - xj + r) * that = 0
+    //
+    // ...where:
+    //   l is the localOffsetB vector rotated to world in bodyA frame
+    //   r is the same vector but reversed and rotated from bodyB frame
+    //   xhat, yhat are world axis vectors
+    //   that is the tangent of r
+    //
+    // For the first two constraints, we get
+    // G*W = (vj - vi - ldot  ) * xhat
+    //     = (vj - vi - wi x l) * xhat
+    //
+    // Since (wi x l) * xhat = (l x xhat) * wi, we get
+    // G*W = [ -1   0   (-l x xhat)  1   0   0] * [vi wi vj wj]
+    //
+    // The last constraint gives
+    // GW = (vi - vj + wj x r) * that
+    //    = [  that   0  -that  (r x t) ]
+
+    var x =     new Equation(bodyA,bodyB,-maxForce,maxForce),
+        y =     new Equation(bodyA,bodyB,-maxForce,maxForce),
+        rot =   new Equation(bodyA,bodyB,-maxForce,maxForce);
+
+    var l = vec2.create(),
+        g = vec2.create(),
+        that = this;
+    x.computeGq = function(){
+        vec2.rotate(l, that.localOffsetB, bodyA.angle);
+        vec2.sub(g, bodyB.position, bodyA.position);
+        vec2.sub(g, g, l);
+        return g[0];
+    };
+    y.computeGq = function(){
+        vec2.rotate(l, that.localOffsetB, bodyA.angle);
+        vec2.sub(g, bodyB.position, bodyA.position);
+        vec2.sub(g, g, l);
+        return g[1];
+    };
+    var r = vec2.create(),
+        t = vec2.create();
+    rot.computeGq = function(){
+        vec2.rotate(r, that.localOffsetB, bodyB.angle - that.localAngleB);
+        vec2.scale(r,r,-1);
+        vec2.sub(g,bodyA.position,bodyB.position);
+        vec2.add(g,g,r);
+        vec2.rotate(t,r,-Math.PI/2);
+        vec2.normalize(t,t);
+        return vec2.dot(g,t);
+    };
+
+    /**
+     * The offset of bodyB in bodyA's frame.
+     * @property {Array} localOffsetB
+     */
+    this.localOffsetB = vec2.create();
+    if(options.localOffsetB){
+        vec2.copy(this.localOffsetB, options.localOffsetB);
+    } else {
+        // Construct from current positions
+        vec2.sub(this.localOffsetB, bodyB.position, bodyA.position);
+        vec2.rotate(this.localOffsetB, this.localOffsetB, -bodyA.angle);
+    }
+
+    /**
+     * The offset angle of bodyB in bodyA's frame.
+     * @property {Number} localAngleB
+     */
+    this.localAngleB = 0;
+    if(typeof(options.localAngleB) === 'number'){
+        this.localAngleB = options.localAngleB;
+    } else {
+        // Construct
+        this.localAngleB = bodyB.angle - bodyA.angle;
+    }
+
+    this.equations.push(x, y, rot);
+    this.setMaxForce(maxForce);
+}
+LockConstraint.prototype = new Constraint();
+LockConstraint.prototype.constructor = LockConstraint;
+
+/**
+ * Set the maximum force to be applied.
+ * @method setMaxForce
+ * @param {Number} force
+ */
+LockConstraint.prototype.setMaxForce = function(force){
+    var eqs = this.equations;
+    for(var i=0; i<this.equations.length; i++){
+        eqs[i].maxForce =  force;
+        eqs[i].minForce = -force;
+    }
+};
+
+/**
+ * Get the max force.
+ * @method getMaxForce
+ * @return {Number}
+ */
+LockConstraint.prototype.getMaxForce = function(){
+    return this.equations[0].maxForce;
+};
+
+var l = vec2.create();
+var r = vec2.create();
+var t = vec2.create();
+var xAxis = vec2.fromValues(1,0);
+var yAxis = vec2.fromValues(0,1);
+LockConstraint.prototype.update = function(){
+    var x =   this.equations[0],
+        y =   this.equations[1],
+        rot = this.equations[2],
+        bodyA = this.bodyA,
+        bodyB = this.bodyB;
+
+    vec2.rotate(l,this.localOffsetB,bodyA.angle);
+    vec2.rotate(r,this.localOffsetB,bodyB.angle - this.localAngleB);
+    vec2.scale(r,r,-1);
+
+    vec2.rotate(t,r,Math.PI/2);
+    vec2.normalize(t,t);
+
+    x.G[0] = -1;
+    x.G[1] =  0;
+    x.G[2] = -vec2.crossLength(l,xAxis);
+    x.G[3] =  1;
+
+    y.G[0] =  0;
+    y.G[1] = -1;
+    y.G[2] = -vec2.crossLength(l,yAxis);
+    y.G[4] =  1;
+
+    rot.G[0] =  -t[0];
+    rot.G[1] =  -t[1];
+    rot.G[3] =  t[0];
+    rot.G[4] =  t[1];
+    rot.G[5] =  vec2.crossLength(r,t);
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/constraints\\LockConstraint.js","/constraints")
+},{"../equations/Equation":27,"../math/vec2":35,"./Constraint":19,"Zbi7gb":4,"buffer":1}],23:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Constraint = _dereq_('./Constraint')
+,   ContactEquation = _dereq_('../equations/ContactEquation')
+,   Equation = _dereq_('../equations/Equation')
+,   vec2 = _dereq_('../math/vec2')
+,   RotationalLockEquation = _dereq_('../equations/RotationalLockEquation');
+
+module.exports = PrismaticConstraint;
+
+/**
+ * Constraint that only allows bodies to move along a line, relative to each other. See <a href="http://www.iforce2d.net/b2dtut/joints-prismatic">this tutorial</a>.
+ *
+ * @class PrismaticConstraint
+ * @constructor
+ * @extends Constraint
+ * @author schteppe
+ * @param {Body}    bodyA
+ * @param {Body}    bodyB
+ * @param {Object}  [options]
+ * @param {Number}  [options.maxForce]                Max force to be applied by the constraint
+ * @param {Array}   [options.localAnchorA]            Body A's anchor point, defined in its own local frame.
+ * @param {Array}   [options.localAnchorB]            Body B's anchor point, defined in its own local frame.
+ * @param {Array}   [options.localAxisA]              An axis, defined in body A frame, that body B's anchor point may slide along.
+ * @param {Boolean} [options.disableRotationalLock]   If set to true, bodyB will be free to rotate around its anchor point.
+ * @param {Number}  [options.upperLimit]
+ * @param {Number}  [options.lowerLimit]
+ * @todo Ability to create using only a point and a worldAxis
+ */
+function PrismaticConstraint(bodyA, bodyB, options){
+    options = options || {};
+    Constraint.call(this,bodyA,bodyB,Constraint.PRISMATIC,options);
+
+    // Get anchors
+    var localAnchorA = vec2.fromValues(0,0),
+        localAxisA = vec2.fromValues(1,0),
+        localAnchorB = vec2.fromValues(0,0);
+    if(options.localAnchorA){ vec2.copy(localAnchorA, options.localAnchorA); }
+    if(options.localAxisA){ vec2.copy(localAxisA,   options.localAxisA); }
+    if(options.localAnchorB){ vec2.copy(localAnchorB, options.localAnchorB); }
+
+    /**
+     * @property localAnchorA
+     * @type {Array}
+     */
+    this.localAnchorA = localAnchorA;
+
+    /**
+     * @property localAnchorB
+     * @type {Array}
+     */
+    this.localAnchorB = localAnchorB;
+
+    /**
+     * @property localAxisA
+     * @type {Array}
+     */
+    this.localAxisA = localAxisA;
+
+    /*
+
+    The constraint violation for the common axis point is
+
+        g = ( xj + rj - xi - ri ) * t   :=  gg*t
+
+    where r are body-local anchor points, and t is a tangent to the constraint axis defined in body i frame.
+
+        gdot =  ( vj + wj x rj - vi - wi x ri ) * t + ( xj + rj - xi - ri ) * ( wi x t )
+
+    Note the use of the chain rule. Now we identify the jacobian
+
+        G*W = [ -t      -ri x t + t x gg     t    rj x t ] * [vi wi vj wj]
+
+    The rotational part is just a rotation lock.
+
+     */
+
+    var maxForce = this.maxForce = typeof(options.maxForce)!=="undefined" ? options.maxForce : Number.MAX_VALUE;
+
+    // Translational part
+    var trans = new Equation(bodyA,bodyB,-maxForce,maxForce);
+    var ri = new vec2.create(),
+        rj = new vec2.create(),
+        gg = new vec2.create(),
+        t =  new vec2.create();
+    trans.computeGq = function(){
+        // g = ( xj + rj - xi - ri ) * t
+        return vec2.dot(gg,t);
+    };
+    trans.updateJacobian = function(){
+        var G = this.G,
+            xi = bodyA.position,
+            xj = bodyB.position;
+        vec2.rotate(ri,localAnchorA,bodyA.angle);
+        vec2.rotate(rj,localAnchorB,bodyB.angle);
+        vec2.add(gg,xj,rj);
+        vec2.sub(gg,gg,xi);
+        vec2.sub(gg,gg,ri);
+        vec2.rotate(t,localAxisA,bodyA.angle+Math.PI/2);
+
+        G[0] = -t[0];
+        G[1] = -t[1];
+        G[2] = -vec2.crossLength(ri,t) + vec2.crossLength(t,gg);
+        G[3] = t[0];
+        G[4] = t[1];
+        G[5] = vec2.crossLength(rj,t);
+    };
+    this.equations.push(trans);
+
+    // Rotational part
+    if(!options.disableRotationalLock){
+        var rot = new RotationalLockEquation(bodyA,bodyB,-maxForce,maxForce);
+        this.equations.push(rot);
+    }
+
+    /**
+     * The position of anchor A relative to anchor B, along the constraint axis.
+     * @property position
+     * @type {Number}
+     */
+    this.position = 0;
+
+    // Is this one used at all?
+    this.velocity = 0;
+
+    /**
+     * Set to true to enable lower limit.
+     * @property lowerLimitEnabled
+     * @type {Boolean}
+     */
+    this.lowerLimitEnabled = typeof(options.lowerLimit)!=="undefined" ? true : false;
+
+    /**
+     * Set to true to enable upper limit.
+     * @property upperLimitEnabled
+     * @type {Boolean}
+     */
+    this.upperLimitEnabled = typeof(options.upperLimit)!=="undefined" ? true : false;
+
+    /**
+     * Lower constraint limit. The constraint position is forced to be larger than this value.
+     * @property lowerLimit
+     * @type {Number}
+     */
+    this.lowerLimit = typeof(options.lowerLimit)!=="undefined" ? options.lowerLimit : 0;
+
+    /**
+     * Upper constraint limit. The constraint position is forced to be smaller than this value.
+     * @property upperLimit
+     * @type {Number}
+     */
+    this.upperLimit = typeof(options.upperLimit)!=="undefined" ? options.upperLimit : 1;
+
+    // Equations used for limits
+    this.upperLimitEquation = new ContactEquation(bodyA,bodyB);
+    this.lowerLimitEquation = new ContactEquation(bodyA,bodyB);
+
+    // Set max/min forces
+    this.upperLimitEquation.minForce = this.lowerLimitEquation.minForce = 0;
+    this.upperLimitEquation.maxForce = this.lowerLimitEquation.maxForce = maxForce;
+
+    /**
+     * Equation used for the motor.
+     * @property motorEquation
+     * @type {Equation}
+     */
+    this.motorEquation = new Equation(bodyA,bodyB);
+
+    /**
+     * The current motor state. Enable or disable the motor using .enableMotor
+     * @property motorEnabled
+     * @type {Boolean}
+     */
+    this.motorEnabled = false;
+
+    /**
+     * Set the target speed for the motor.
+     * @property motorSpeed
+     * @type {Number}
+     */
+    this.motorSpeed = 0;
+
+    var that = this;
+    var motorEquation = this.motorEquation;
+    var old = motorEquation.computeGW;
+    motorEquation.computeGq = function(){ return 0; };
+    motorEquation.computeGW = function(){
+        var G = this.G,
+            bi = this.bodyA,
+            bj = this.bodyB,
+            vi = bi.velocity,
+            vj = bj.velocity,
+            wi = bi.angularVelocity,
+            wj = bj.angularVelocity;
+        return this.gmult(G,vi,wi,vj,wj) + that.motorSpeed;
+    };
+}
+
+PrismaticConstraint.prototype = new Constraint();
+PrismaticConstraint.prototype.constructor = PrismaticConstraint;
+
+var worldAxisA = vec2.create(),
+    worldAnchorA = vec2.create(),
+    worldAnchorB = vec2.create(),
+    orientedAnchorA = vec2.create(),
+    orientedAnchorB = vec2.create(),
+    tmp = vec2.create();
+
+/**
+ * Update the constraint equations. Should be done if any of the bodies changed position, before solving.
+ * @method update
+ */
+PrismaticConstraint.prototype.update = function(){
+    var eqs = this.equations,
+        trans = eqs[0],
+        upperLimit = this.upperLimit,
+        lowerLimit = this.lowerLimit,
+        upperLimitEquation = this.upperLimitEquation,
+        lowerLimitEquation = this.lowerLimitEquation,
+        bodyA = this.bodyA,
+        bodyB = this.bodyB,
+        localAxisA = this.localAxisA,
+        localAnchorA = this.localAnchorA,
+        localAnchorB = this.localAnchorB;
+
+    trans.updateJacobian();
+
+    // Transform local things to world
+    vec2.rotate(worldAxisA,      localAxisA,      bodyA.angle);
+    vec2.rotate(orientedAnchorA, localAnchorA,    bodyA.angle);
+    vec2.add(worldAnchorA,       orientedAnchorA, bodyA.position);
+    vec2.rotate(orientedAnchorB, localAnchorB,    bodyB.angle);
+    vec2.add(worldAnchorB,       orientedAnchorB, bodyB.position);
+
+    var relPosition = this.position = vec2.dot(worldAnchorB,worldAxisA) - vec2.dot(worldAnchorA,worldAxisA);
+
+    // Motor
+    if(this.motorEnabled){
+        // G = [ a     a x ri   -a   -a x rj ]
+        var G = this.motorEquation.G;
+        G[0] = worldAxisA[0];
+        G[1] = worldAxisA[1];
+        G[2] = vec2.crossLength(worldAxisA,orientedAnchorB);
+        G[3] = -worldAxisA[0];
+        G[4] = -worldAxisA[1];
+        G[5] = -vec2.crossLength(worldAxisA,orientedAnchorA);
+    }
+
+    /*
+        Limits strategy:
+        Add contact equation, with normal along the constraint axis.
+        min/maxForce is set so the constraint is repulsive in the correct direction.
+        Some offset is added to either equation.contactPointA or .contactPointB to get the correct upper/lower limit.
+
+                 ^
+                 |
+      upperLimit x
+                 |    ------
+         anchorB x<---|  B |
+                 |    |    |
+        ------   |    ------
+        |    |   |
+        |  A |-->x anchorA
+        ------   |
+                 x lowerLimit
+                 |
+                axis
+     */
+
+
+    if(this.upperLimitEnabled && relPosition > upperLimit){
+        // Update contact constraint normal, etc
+        vec2.scale(upperLimitEquation.normalA, worldAxisA, -1);
+        vec2.sub(upperLimitEquation.contactPointA, worldAnchorA, bodyA.position);
+        vec2.sub(upperLimitEquation.contactPointB, worldAnchorB, bodyB.position);
+        vec2.scale(tmp,worldAxisA,upperLimit);
+        vec2.add(upperLimitEquation.contactPointA,upperLimitEquation.contactPointA,tmp);
+        if(eqs.indexOf(upperLimitEquation) === -1){
+            eqs.push(upperLimitEquation);
+        }
+    } else {
+        var idx = eqs.indexOf(upperLimitEquation);
+        if(idx !== -1){
+            eqs.splice(idx,1);
+        }
+    }
+
+    if(this.lowerLimitEnabled && relPosition < lowerLimit){
+        // Update contact constraint normal, etc
+        vec2.scale(lowerLimitEquation.normalA, worldAxisA, 1);
+        vec2.sub(lowerLimitEquation.contactPointA, worldAnchorA, bodyA.position);
+        vec2.sub(lowerLimitEquation.contactPointB, worldAnchorB, bodyB.position);
+        vec2.scale(tmp,worldAxisA,lowerLimit);
+        vec2.sub(lowerLimitEquation.contactPointB,lowerLimitEquation.contactPointB,tmp);
+        if(eqs.indexOf(lowerLimitEquation) === -1){
+            eqs.push(lowerLimitEquation);
+        }
+    } else {
+        var idx = eqs.indexOf(lowerLimitEquation);
+        if(idx !== -1){
+            eqs.splice(idx,1);
+        }
+    }
+};
+
+/**
+ * Enable the motor
+ * @method enableMotor
+ */
+PrismaticConstraint.prototype.enableMotor = function(){
+    if(this.motorEnabled){
+        return;
+    }
+    this.equations.push(this.motorEquation);
+    this.motorEnabled = true;
+};
+
+/**
+ * Disable the rotational motor
+ * @method disableMotor
+ */
+PrismaticConstraint.prototype.disableMotor = function(){
+    if(!this.motorEnabled){
+        return;
+    }
+    var i = this.equations.indexOf(this.motorEquation);
+    this.equations.splice(i,1);
+    this.motorEnabled = false;
+};
+
+/**
+ * Set the constraint limits.
+ * @method setLimits
+ * @param {number} lower Lower limit.
+ * @param {number} upper Upper limit.
+ */
+PrismaticConstraint.prototype.setLimits = function (lower, upper) {
+    if(typeof(lower) === 'number'){
+        this.lowerLimit = lower;
+        this.lowerLimitEnabled = true;
+    } else {
+        this.lowerLimit = lower;
+        this.lowerLimitEnabled = false;
+    }
+
+    if(typeof(upper) === 'number'){
+        this.upperLimit = upper;
+        this.upperLimitEnabled = true;
+    } else {
+        this.upperLimit = upper;
+        this.upperLimitEnabled = false;
+    }
+};
+
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/constraints\\PrismaticConstraint.js","/constraints")
+},{"../equations/ContactEquation":26,"../equations/Equation":27,"../equations/RotationalLockEquation":29,"../math/vec2":35,"./Constraint":19,"Zbi7gb":4,"buffer":1}],24:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Constraint = _dereq_('./Constraint')
+,   Equation = _dereq_('../equations/Equation')
+,   RotationalVelocityEquation = _dereq_('../equations/RotationalVelocityEquation')
+,   RotationalLockEquation = _dereq_('../equations/RotationalLockEquation')
+,   vec2 = _dereq_('../math/vec2');
+
+module.exports = RevoluteConstraint;
+
+var worldPivotA = vec2.create(),
+    worldPivotB = vec2.create(),
+    xAxis = vec2.fromValues(1,0),
+    yAxis = vec2.fromValues(0,1),
+    g = vec2.create();
+
+/**
+ * Connects two bodies at given offset points, letting them rotate relative to each other around this point.
+ * @class RevoluteConstraint
+ * @constructor
+ * @author schteppe
+ * @param {Body}    bodyA
+ * @param {Body}    bodyB
+ * @param {Object}  [options]
+ * @param {Array}   [options.worldPivot] A pivot point given in world coordinates. If specified, localPivotA and localPivotB are automatically computed from this value.
+ * @param {Array}   [options.localPivotA] The point relative to the center of mass of bodyA which bodyA is constrained to.
+ * @param {Array}   [options.localPivotB] See localPivotA.
+ * @param {Number}  [options.maxForce] The maximum force that should be applied to constrain the bodies.
+ * @extends Constraint
+ *
+ * @example
+ *     // This will create a revolute constraint between two bodies with pivot point in between them.
+ *     var bodyA = new Body({ mass: 1, position: [-1, 0] });
+ *     var bodyB = new Body({ mass: 1, position: [1, 0] });
+ *     var constraint = new RevoluteConstraint(bodyA, bodyB, {
+ *         worldPivot: [0, 0]
+ *     });
+ *     world.addConstraint(constraint);
+ *
+ *     // Using body-local pivot points, the constraint could have been constructed like this:
+ *     var constraint = new RevoluteConstraint(bodyA, bodyB, {
+ *         localPivotA: [1, 0],
+ *         localPivotB: [-1, 0]
+ *     });
+ */
+function RevoluteConstraint(bodyA, bodyB, options){
+    options = options || {};
+    Constraint.call(this,bodyA,bodyB,Constraint.REVOLUTE,options);
+
+    var maxForce = this.maxForce = typeof(options.maxForce) !== "undefined" ? options.maxForce : Number.MAX_VALUE;
+
+    /**
+     * @property {Array} pivotA
+     */
+    this.pivotA = vec2.create();
+
+    /**
+     * @property {Array} pivotB
+     */
+    this.pivotB = vec2.create();
+
+    if(options.worldPivot){
+        // Compute pivotA and pivotB
+        vec2.sub(this.pivotA, options.worldPivot, bodyA.position);
+        vec2.sub(this.pivotB, options.worldPivot, bodyB.position);
+        // Rotate to local coordinate system
+        vec2.rotate(this.pivotA, this.pivotA, -bodyA.angle);
+        vec2.rotate(this.pivotB, this.pivotB, -bodyB.angle);
+    } else {
+        // Get pivotA and pivotB
+        vec2.copy(this.pivotA, options.localPivotA);
+        vec2.copy(this.pivotB, options.localPivotB);
+    }
+
+    // Equations to be fed to the solver
+    var eqs = this.equations = [
+        new Equation(bodyA,bodyB,-maxForce,maxForce),
+        new Equation(bodyA,bodyB,-maxForce,maxForce),
+    ];
+
+    var x = eqs[0];
+    var y = eqs[1];
+    var that = this;
+
+    x.computeGq = function(){
+        vec2.rotate(worldPivotA, that.pivotA, bodyA.angle);
+        vec2.rotate(worldPivotB, that.pivotB, bodyB.angle);
+        vec2.add(g, bodyB.position, worldPivotB);
+        vec2.sub(g, g, bodyA.position);
+        vec2.sub(g, g, worldPivotA);
+        return vec2.dot(g,xAxis);
+    };
+
+    y.computeGq = function(){
+        vec2.rotate(worldPivotA, that.pivotA, bodyA.angle);
+        vec2.rotate(worldPivotB, that.pivotB, bodyB.angle);
+        vec2.add(g, bodyB.position, worldPivotB);
+        vec2.sub(g, g, bodyA.position);
+        vec2.sub(g, g, worldPivotA);
+        return vec2.dot(g,yAxis);
+    };
+
+    y.minForce = x.minForce = -maxForce;
+    y.maxForce = x.maxForce =  maxForce;
+
+    this.motorEquation = new RotationalVelocityEquation(bodyA,bodyB);
+
+    /**
+     * Indicates whether the motor is enabled. Use .enableMotor() to enable the constraint motor.
+     * @property {Boolean} motorEnabled
+     * @readOnly
+     */
+    this.motorEnabled = false;
+
+    /**
+     * The constraint position.
+     * @property angle
+     * @type {Number}
+     * @readOnly
+     */
+    this.angle = 0;
+
+    /**
+     * Set to true to enable lower limit
+     * @property lowerLimitEnabled
+     * @type {Boolean}
+     */
+    this.lowerLimitEnabled = false;
+
+    /**
+     * Set to true to enable upper limit
+     * @property upperLimitEnabled
+     * @type {Boolean}
+     */
+    this.upperLimitEnabled = false;
+
+    /**
+     * The lower limit on the constraint angle.
+     * @property lowerLimit
+     * @type {Boolean}
+     */
+    this.lowerLimit = 0;
+
+    /**
+     * The upper limit on the constraint angle.
+     * @property upperLimit
+     * @type {Boolean}
+     */
+    this.upperLimit = 0;
+
+    this.upperLimitEquation = new RotationalLockEquation(bodyA,bodyB);
+    this.lowerLimitEquation = new RotationalLockEquation(bodyA,bodyB);
+    this.upperLimitEquation.minForce = 0;
+    this.lowerLimitEquation.maxForce = 0;
+}
+RevoluteConstraint.prototype = new Constraint();
+RevoluteConstraint.prototype.constructor = RevoluteConstraint;
+
+/**
+ * Set the constraint angle limits.
+ * @method setLimits
+ * @param {number} lower Lower angle limit.
+ * @param {number} upper Upper angle limit.
+ */
+RevoluteConstraint.prototype.setLimits = function (lower, upper) {
+    if(typeof(lower) === 'number'){
+        this.lowerLimit = lower;
+        this.lowerLimitEnabled = true;
+    } else {
+        this.lowerLimit = lower;
+        this.lowerLimitEnabled = false;
+    }
+
+    if(typeof(upper) === 'number'){
+        this.upperLimit = upper;
+        this.upperLimitEnabled = true;
+    } else {
+        this.upperLimit = upper;
+        this.upperLimitEnabled = false;
+    }
+};
+
+RevoluteConstraint.prototype.update = function(){
+    var bodyA =  this.bodyA,
+        bodyB =  this.bodyB,
+        pivotA = this.pivotA,
+        pivotB = this.pivotB,
+        eqs =    this.equations,
+        normal = eqs[0],
+        tangent= eqs[1],
+        x = eqs[0],
+        y = eqs[1],
+        upperLimit = this.upperLimit,
+        lowerLimit = this.lowerLimit,
+        upperLimitEquation = this.upperLimitEquation,
+        lowerLimitEquation = this.lowerLimitEquation;
+
+    var relAngle = this.angle = bodyB.angle - bodyA.angle;
+
+    if(this.upperLimitEnabled && relAngle > upperLimit){
+        upperLimitEquation.angle = upperLimit;
+        if(eqs.indexOf(upperLimitEquation) === -1){
+            eqs.push(upperLimitEquation);
+        }
+    } else {
+        var idx = eqs.indexOf(upperLimitEquation);
+        if(idx !== -1){
+            eqs.splice(idx,1);
+        }
+    }
+
+    if(this.lowerLimitEnabled && relAngle < lowerLimit){
+        lowerLimitEquation.angle = lowerLimit;
+        if(eqs.indexOf(lowerLimitEquation) === -1){
+            eqs.push(lowerLimitEquation);
+        }
+    } else {
+        var idx = eqs.indexOf(lowerLimitEquation);
+        if(idx !== -1){
+            eqs.splice(idx,1);
+        }
+    }
+
+    /*
+
+    The constraint violation is
+
+        g = xj + rj - xi - ri
+
+    ...where xi and xj are the body positions and ri and rj world-oriented offset vectors. Differentiate:
+
+        gdot = vj + wj x rj - vi - wi x ri
+
+    We split this into x and y directions. (let x and y be unit vectors along the respective axes)
+
+        gdot * x = ( vj + wj x rj - vi - wi x ri ) * x
+                 = ( vj*x + (wj x rj)*x -vi*x -(wi x ri)*x
+                 = ( vj*x + (rj x x)*wj -vi*x -(ri x x)*wi
+                 = [ -x   -(ri x x)   x   (rj x x)] * [vi wi vj wj]
+                 = G*W
+
+    ...and similar for y. We have then identified the jacobian entries for x and y directions:
+
+        Gx = [ x   (rj x x)   -x   -(ri x x)]
+        Gy = [ y   (rj x y)   -y   -(ri x y)]
+
+     */
+
+    vec2.rotate(worldPivotA, pivotA, bodyA.angle);
+    vec2.rotate(worldPivotB, pivotB, bodyB.angle);
+
+    // todo: these are a bit sparse. We could save some computations on making custom eq.computeGW functions, etc
+
+    x.G[0] = -1;
+    x.G[1] =  0;
+    x.G[2] = -vec2.crossLength(worldPivotA,xAxis);
+    x.G[3] =  1;
+    x.G[4] =  0;
+    x.G[5] =  vec2.crossLength(worldPivotB,xAxis);
+
+    y.G[0] =  0;
+    y.G[1] = -1;
+    y.G[2] = -vec2.crossLength(worldPivotA,yAxis);
+    y.G[3] =  0;
+    y.G[4] =  1;
+    y.G[5] =  vec2.crossLength(worldPivotB,yAxis);
+};
+
+/**
+ * Enable the rotational motor
+ * @method enableMotor
+ */
+RevoluteConstraint.prototype.enableMotor = function(){
+    if(this.motorEnabled){
+        return;
+    }
+    this.equations.push(this.motorEquation);
+    this.motorEnabled = true;
+};
+
+/**
+ * Disable the rotational motor
+ * @method disableMotor
+ */
+RevoluteConstraint.prototype.disableMotor = function(){
+    if(!this.motorEnabled){
+        return;
+    }
+    var i = this.equations.indexOf(this.motorEquation);
+    this.equations.splice(i,1);
+    this.motorEnabled = false;
+};
+
+/**
+ * Check if the motor is enabled.
+ * @method motorIsEnabled
+ * @deprecated use property motorEnabled instead.
+ * @return {Boolean}
+ */
+RevoluteConstraint.prototype.motorIsEnabled = function(){
+    return !!this.motorEnabled;
+};
+
+/**
+ * Set the speed of the rotational constraint motor
+ * @method setMotorSpeed
+ * @param  {Number} speed
+ */
+RevoluteConstraint.prototype.setMotorSpeed = function(speed){
+    if(!this.motorEnabled){
+        return;
+    }
+    var i = this.equations.indexOf(this.motorEquation);
+    this.equations[i].relativeVelocity = speed;
+};
+
+/**
+ * Get the speed of the rotational constraint motor
+ * @method getMotorSpeed
+ * @return {Number} The current speed, or false if the motor is not enabled.
+ */
+RevoluteConstraint.prototype.getMotorSpeed = function(){
+    if(!this.motorEnabled){
+        return false;
+    }
+    return this.motorEquation.relativeVelocity;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/constraints\\RevoluteConstraint.js","/constraints")
+},{"../equations/Equation":27,"../equations/RotationalLockEquation":29,"../equations/RotationalVelocityEquation":30,"../math/vec2":35,"./Constraint":19,"Zbi7gb":4,"buffer":1}],25:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Equation = _dereq_("./Equation"),
+    vec2 = _dereq_('../math/vec2');
+
+module.exports = AngleLockEquation;
+
+/**
+ * Locks the relative angle between two bodies. The constraint tries to keep the dot product between two vectors, local in each body, to zero. The local angle in body i is a parameter.
+ *
+ * @class AngleLockEquation
+ * @constructor
+ * @extends Equation
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Object} [options]
+ * @param {Number} [options.angle] Angle to add to the local vector in body A.
+ * @param {Number} [options.ratio] Gear ratio
+ */
+function AngleLockEquation(bodyA, bodyB, options){
+    options = options || {};
+    Equation.call(this,bodyA,bodyB,-Number.MAX_VALUE,Number.MAX_VALUE);
+    this.angle = options.angle || 0;
+
+    /**
+     * The gear ratio.
+     * @property {Number} ratio
+     * @private
+     * @see setRatio
+     */
+    this.ratio = typeof(options.ratio)==="number" ? options.ratio : 1;
+
+    this.setRatio(this.ratio);
+}
+AngleLockEquation.prototype = new Equation();
+AngleLockEquation.prototype.constructor = AngleLockEquation;
+
+AngleLockEquation.prototype.computeGq = function(){
+    return this.ratio * this.bodyA.angle - this.bodyB.angle + this.angle;
+};
+
+/**
+ * Set the gear ratio for this equation
+ * @method setRatio
+ * @param {Number} ratio
+ */
+AngleLockEquation.prototype.setRatio = function(ratio){
+    var G = this.G;
+    G[2] =  ratio;
+    G[5] = -1;
+    this.ratio = ratio;
+};
+
+/**
+ * Set the max force for the equation.
+ * @method setMaxTorque
+ * @param {Number} torque
+ */
+AngleLockEquation.prototype.setMaxTorque = function(torque){
+    this.maxForce =  torque;
+    this.minForce = -torque;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/equations\\AngleLockEquation.js","/equations")
+},{"../math/vec2":35,"./Equation":27,"Zbi7gb":4,"buffer":1}],26:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Equation = _dereq_("./Equation"),
+    vec2 = _dereq_('../math/vec2');
+
+module.exports = ContactEquation;
+
+/**
+ * Non-penetration constraint equation. Tries to make the contactPointA and contactPointB vectors coincide, while keeping the applied force repulsive.
+ *
+ * @class ContactEquation
+ * @constructor
+ * @extends Equation
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ */
+function ContactEquation(bodyA, bodyB){
+    Equation.call(this, bodyA, bodyB, 0, Number.MAX_VALUE);
+
+    /**
+     * Vector from body i center of mass to the contact point.
+     * @property contactPointA
+     * @type {Array}
+     */
+    this.contactPointA = vec2.create();
+    this.penetrationVec = vec2.create();
+
+    /**
+     * World-oriented vector from body A center of mass to the contact point.
+     * @property contactPointB
+     * @type {Array}
+     */
+    this.contactPointB = vec2.create();
+
+    /**
+     * The normal vector, pointing out of body i
+     * @property normalA
+     * @type {Array}
+     */
+    this.normalA = vec2.create();
+
+    /**
+     * The restitution to use (0=no bounciness, 1=max bounciness).
+     * @property restitution
+     * @type {Number}
+     */
+    this.restitution = 0;
+
+    /**
+     * This property is set to true if this is the first impact between the bodies (not persistant contact).
+     * @property firstImpact
+     * @type {Boolean}
+     * @readOnly
+     */
+    this.firstImpact = false;
+
+    /**
+     * The shape in body i that triggered this contact.
+     * @property shapeA
+     * @type {Shape}
+     */
+    this.shapeA = null;
+
+    /**
+     * The shape in body j that triggered this contact.
+     * @property shapeB
+     * @type {Shape}
+     */
+    this.shapeB = null;
+}
+ContactEquation.prototype = new Equation();
+ContactEquation.prototype.constructor = ContactEquation;
+ContactEquation.prototype.computeB = function(a,b,h){
+    var bi = this.bodyA,
+        bj = this.bodyB,
+        ri = this.contactPointA,
+        rj = this.contactPointB,
+        xi = bi.position,
+        xj = bj.position;
+
+    var penetrationVec = this.penetrationVec,
+        n = this.normalA,
+        G = this.G;
+
+    // Caluclate cross products
+    var rixn = vec2.crossLength(ri,n),
+        rjxn = vec2.crossLength(rj,n);
+
+    // G = [-n -rixn n rjxn]
+    G[0] = -n[0];
+    G[1] = -n[1];
+    G[2] = -rixn;
+    G[3] = n[0];
+    G[4] = n[1];
+    G[5] = rjxn;
+
+    // Calculate q = xj+rj -(xi+ri) i.e. the penetration vector
+    vec2.add(penetrationVec,xj,rj);
+    vec2.sub(penetrationVec,penetrationVec,xi);
+    vec2.sub(penetrationVec,penetrationVec,ri);
+
+    // Compute iteration
+    var GW, Gq;
+    if(this.firstImpact && this.restitution !== 0){
+        Gq = 0;
+        GW = (1/b)*(1+this.restitution) * this.computeGW();
+    } else {
+        Gq = vec2.dot(n,penetrationVec) + this.offset;
+        GW = this.computeGW();
+    }
+
+    var GiMf = this.computeGiMf();
+    var B = - Gq * a - GW * b - h*GiMf;
+
+    return B;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/equations\\ContactEquation.js","/equations")
+},{"../math/vec2":35,"./Equation":27,"Zbi7gb":4,"buffer":1}],27:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = Equation;
+
+var vec2 = _dereq_('../math/vec2'),
+    Utils = _dereq_('../utils/Utils'),
+    Body = _dereq_('../objects/Body');
+
+/**
+ * Base class for constraint equations.
+ * @class Equation
+ * @constructor
+ * @param {Body} bodyA First body participating in the equation
+ * @param {Body} bodyB Second body participating in the equation
+ * @param {number} minForce Minimum force to apply. Default: -Number.MAX_VALUE
+ * @param {number} maxForce Maximum force to apply. Default: Number.MAX_VALUE
+ */
+function Equation(bodyA, bodyB, minForce, maxForce){
+
+    /**
+     * Minimum force to apply when solving.
+     * @property minForce
+     * @type {Number}
+     */
+    this.minForce = typeof(minForce)==="undefined" ? -Number.MAX_VALUE : minForce;
+
+    /**
+     * Max force to apply when solving.
+     * @property maxForce
+     * @type {Number}
+     */
+    this.maxForce = typeof(maxForce)==="undefined" ? Number.MAX_VALUE : maxForce;
+
+    /**
+     * First body participating in the constraint
+     * @property bodyA
+     * @type {Body}
+     */
+    this.bodyA = bodyA;
+
+    /**
+     * Second body participating in the constraint
+     * @property bodyB
+     * @type {Body}
+     */
+    this.bodyB = bodyB;
+
+    /**
+     * The stiffness of this equation. Typically chosen to a large number (~1e7), but can be chosen somewhat freely to get a stable simulation.
+     * @property stiffness
+     * @type {Number}
+     */
+    this.stiffness = Equation.DEFAULT_STIFFNESS;
+
+    /**
+     * The number of time steps needed to stabilize the constraint equation. Typically between 3 and 5 time steps.
+     * @property relaxation
+     * @type {Number}
+     */
+    this.relaxation = Equation.DEFAULT_RELAXATION;
+
+    /**
+     * The Jacobian entry of this equation. 6 numbers, 3 per body (x,y,angle).
+     * @property G
+     * @type {Array}
+     */
+    this.G = new Utils.ARRAY_TYPE(6);
+    for(var i=0; i<6; i++){
+        this.G[i]=0;
+    }
+
+    this.offset = 0;
+
+    this.a = 0;
+    this.b = 0;
+    this.epsilon = 0;
+    this.timeStep = 1/60;
+
+    /**
+     * Indicates if stiffness or relaxation was changed.
+     * @property {Boolean} needsUpdate
+     */
+    this.needsUpdate = true;
+
+    /**
+     * The resulting constraint multiplier from the last solve. This is mostly equivalent to the force produced by the constraint.
+     * @property multiplier
+     * @type {Number}
+     */
+    this.multiplier = 0;
+
+    /**
+     * Relative velocity.
+     * @property {Number} relativeVelocity
+     */
+    this.relativeVelocity = 0;
+
+    /**
+     * Whether this equation is enabled or not. If true, it will be added to the solver.
+     * @property {Boolean} enabled
+     */
+    this.enabled = true;
+}
+Equation.prototype.constructor = Equation;
+
+/**
+ * The default stiffness when creating a new Equation.
+ * @static
+ * @property {Number} DEFAULT_STIFFNESS
+ * @default 1e6
+ */
+Equation.DEFAULT_STIFFNESS = 1e6;
+
+/**
+ * The default relaxation when creating a new Equation.
+ * @static
+ * @property {Number} DEFAULT_RELAXATION
+ * @default 4
+ */
+Equation.DEFAULT_RELAXATION = 4;
+
+/**
+ * Compute SPOOK parameters .a, .b and .epsilon according to the current parameters. See equations 9, 10 and 11 in the <a href="http://www8.cs.umu.se/kurser/5DV058/VT09/lectures/spooknotes.pdf">SPOOK notes</a>.
+ * @method update
+ */
+Equation.prototype.update = function(){
+    var k = this.stiffness,
+        d = this.relaxation,
+        h = this.timeStep;
+
+    this.a = 4.0 / (h * (1 + 4 * d));
+    this.b = (4.0 * d) / (1 + 4 * d);
+    this.epsilon = 4.0 / (h * h * k * (1 + 4 * d));
+
+    this.needsUpdate = false;
+};
+
+/**
+ * Multiply a jacobian entry with corresponding positions or velocities
+ * @method gmult
+ * @return {Number}
+ */
+Equation.prototype.gmult = function(G,vi,wi,vj,wj){
+    return  G[0] * vi[0] +
+            G[1] * vi[1] +
+            G[2] * wi +
+            G[3] * vj[0] +
+            G[4] * vj[1] +
+            G[5] * wj;
+};
+
+/**
+ * Computes the RHS of the SPOOK equation
+ * @method computeB
+ * @return {Number}
+ */
+Equation.prototype.computeB = function(a,b,h){
+    var GW = this.computeGW();
+    var Gq = this.computeGq();
+    var GiMf = this.computeGiMf();
+    return - Gq * a - GW * b - GiMf*h;
+};
+
+/**
+ * Computes G\*q, where q are the generalized body coordinates
+ * @method computeGq
+ * @return {Number}
+ */
+var qi = vec2.create(),
+    qj = vec2.create();
+Equation.prototype.computeGq = function(){
+    var G = this.G,
+        bi = this.bodyA,
+        bj = this.bodyB,
+        xi = bi.position,
+        xj = bj.position,
+        ai = bi.angle,
+        aj = bj.angle;
+
+    return this.gmult(G, qi, ai, qj, aj) + this.offset;
+};
+
+/**
+ * Computes G\*W, where W are the body velocities
+ * @method computeGW
+ * @return {Number}
+ */
+Equation.prototype.computeGW = function(){
+    var G = this.G,
+        bi = this.bodyA,
+        bj = this.bodyB,
+        vi = bi.velocity,
+        vj = bj.velocity,
+        wi = bi.angularVelocity,
+        wj = bj.angularVelocity;
+    return this.gmult(G,vi,wi,vj,wj) + this.relativeVelocity;
+};
+
+/**
+ * Computes G\*Wlambda, where W are the body velocities
+ * @method computeGWlambda
+ * @return {Number}
+ */
+Equation.prototype.computeGWlambda = function(){
+    var G = this.G,
+        bi = this.bodyA,
+        bj = this.bodyB,
+        vi = bi.vlambda,
+        vj = bj.vlambda,
+        wi = bi.wlambda,
+        wj = bj.wlambda;
+    return this.gmult(G,vi,wi,vj,wj);
+};
+
+/**
+ * Computes G\*inv(M)\*f, where M is the mass matrix with diagonal blocks for each body, and f are the forces on the bodies.
+ * @method computeGiMf
+ * @return {Number}
+ */
+var iMfi = vec2.create(),
+    iMfj = vec2.create();
+Equation.prototype.computeGiMf = function(){
+    var bi = this.bodyA,
+        bj = this.bodyB,
+        fi = bi.force,
+        ti = bi.angularForce,
+        fj = bj.force,
+        tj = bj.angularForce,
+        invMassi = bi.invMassSolve,
+        invMassj = bj.invMassSolve,
+        invIi = bi.invInertiaSolve,
+        invIj = bj.invInertiaSolve,
+        G = this.G;
+
+    vec2.scale(iMfi, fi,invMassi);
+    vec2.scale(iMfj, fj,invMassj);
+
+    return this.gmult(G,iMfi,ti*invIi,iMfj,tj*invIj);
+};
+
+/**
+ * Computes G\*inv(M)\*G'
+ * @method computeGiMGt
+ * @return {Number}
+ */
+Equation.prototype.computeGiMGt = function(){
+    var bi = this.bodyA,
+        bj = this.bodyB,
+        invMassi = bi.invMassSolve,
+        invMassj = bj.invMassSolve,
+        invIi = bi.invInertiaSolve,
+        invIj = bj.invInertiaSolve,
+        G = this.G;
+
+    return  G[0] * G[0] * invMassi +
+            G[1] * G[1] * invMassi +
+            G[2] * G[2] *    invIi +
+            G[3] * G[3] * invMassj +
+            G[4] * G[4] * invMassj +
+            G[5] * G[5] *    invIj;
+};
+
+var addToWlambda_temp = vec2.create(),
+    addToWlambda_Gi = vec2.create(),
+    addToWlambda_Gj = vec2.create(),
+    addToWlambda_ri = vec2.create(),
+    addToWlambda_rj = vec2.create(),
+    addToWlambda_Mdiag = vec2.create();
+
+/**
+ * Add constraint velocity to the bodies.
+ * @method addToWlambda
+ * @param {Number} deltalambda
+ */
+Equation.prototype.addToWlambda = function(deltalambda){
+    var bi = this.bodyA,
+        bj = this.bodyB,
+        temp = addToWlambda_temp,
+        Gi = addToWlambda_Gi,
+        Gj = addToWlambda_Gj,
+        ri = addToWlambda_ri,
+        rj = addToWlambda_rj,
+        invMassi = bi.invMassSolve,
+        invMassj = bj.invMassSolve,
+        invIi = bi.invInertiaSolve,
+        invIj = bj.invInertiaSolve,
+        Mdiag = addToWlambda_Mdiag,
+        G = this.G;
+
+    Gi[0] = G[0];
+    Gi[1] = G[1];
+    Gj[0] = G[3];
+    Gj[1] = G[4];
+
+    // Add to linear velocity
+    // v_lambda += inv(M) * delta_lamba * G
+    vec2.scale(temp, Gi, invMassi*deltalambda);
+    vec2.add( bi.vlambda, bi.vlambda, temp);
+    // This impulse is in the offset frame
+    // Also add contribution to angular
+    //bi.wlambda -= vec2.crossLength(temp,ri);
+    bi.wlambda += invIi * G[2] * deltalambda;
+
+
+    vec2.scale(temp, Gj, invMassj*deltalambda);
+    vec2.add( bj.vlambda, bj.vlambda, temp);
+    //bj.wlambda -= vec2.crossLength(temp,rj);
+    bj.wlambda += invIj * G[5] * deltalambda;
+};
+
+/**
+ * Compute the denominator part of the SPOOK equation: C = G\*inv(M)\*G' + eps
+ * @method computeInvC
+ * @param  {Number} eps
+ * @return {Number}
+ */
+Equation.prototype.computeInvC = function(eps){
+    return 1.0 / (this.computeGiMGt() + eps);
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/equations\\Equation.js","/equations")
+},{"../math/vec2":35,"../objects/Body":36,"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],28:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2')
+,   Equation = _dereq_('./Equation')
+,   Utils = _dereq_('../utils/Utils');
+
+module.exports = FrictionEquation;
+
+/**
+ * Constrains the slipping in a contact along a tangent
+ *
+ * @class FrictionEquation
+ * @constructor
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Number} slipForce
+ * @extends Equation
+ */
+function FrictionEquation(bodyA, bodyB, slipForce){
+    Equation.call(this, bodyA, bodyB, -slipForce, slipForce);
+
+    /**
+     * Relative vector from center of body A to the contact point, world oriented.
+     * @property contactPointA
+     * @type {Array}
+     */
+    this.contactPointA = vec2.create();
+
+    /**
+     * Relative vector from center of body B to the contact point, world oriented.
+     * @property contactPointB
+     * @type {Array}
+     */
+    this.contactPointB = vec2.create();
+
+    /**
+     * Tangent vector that the friction force will act along. World oriented.
+     * @property t
+     * @type {Array}
+     */
+    this.t = vec2.create();
+
+    /**
+     * A ContactEquation connected to this friction. The contact equations can be used to rescale the max force for the friction. If more than one contact equation is given, then the max force can be set to the average.
+     * @property contactEquations
+     * @type {ContactEquation}
+     */
+    this.contactEquations = [];
+
+    /**
+     * The shape in body i that triggered this friction.
+     * @property shapeA
+     * @type {Shape}
+     * @todo Needed? The shape can be looked up via contactEquation.shapeA...
+     */
+    this.shapeA = null;
+
+    /**
+     * The shape in body j that triggered this friction.
+     * @property shapeB
+     * @type {Shape}
+     * @todo Needed? The shape can be looked up via contactEquation.shapeB...
+     */
+    this.shapeB = null;
+
+    /**
+     * The friction coefficient to use.
+     * @property frictionCoefficient
+     * @type {Number}
+     */
+    this.frictionCoefficient = 0.3;
+}
+FrictionEquation.prototype = new Equation();
+FrictionEquation.prototype.constructor = FrictionEquation;
+
+/**
+ * Set the slipping condition for the constraint. The friction force cannot be
+ * larger than this value.
+ * @method setSlipForce
+ * @param  {Number} slipForce
+ */
+FrictionEquation.prototype.setSlipForce = function(slipForce){
+    this.maxForce = slipForce;
+    this.minForce = -slipForce;
+};
+
+/**
+ * Get the max force for the constraint.
+ * @method getSlipForce
+ * @return {Number}
+ */
+FrictionEquation.prototype.getSlipForce = function(){
+    return this.maxForce;
+};
+
+FrictionEquation.prototype.computeB = function(a,b,h){
+    var bi = this.bodyA,
+        bj = this.bodyB,
+        ri = this.contactPointA,
+        rj = this.contactPointB,
+        t = this.t,
+        G = this.G;
+
+    // G = [-t -rixt t rjxt]
+    // And remember, this is a pure velocity constraint, g is always zero!
+    G[0] = -t[0];
+    G[1] = -t[1];
+    G[2] = -vec2.crossLength(ri,t);
+    G[3] = t[0];
+    G[4] = t[1];
+    G[5] = vec2.crossLength(rj,t);
+
+    var GW = this.computeGW(),
+        GiMf = this.computeGiMf();
+
+    var B = /* - g * a  */ - GW * b - h*GiMf;
+
+    return B;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/equations\\FrictionEquation.js","/equations")
+},{"../math/vec2":35,"../utils/Utils":54,"./Equation":27,"Zbi7gb":4,"buffer":1}],29:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Equation = _dereq_("./Equation"),
+    vec2 = _dereq_('../math/vec2');
+
+module.exports = RotationalLockEquation;
+
+/**
+ * Locks the relative angle between two bodies. The constraint tries to keep the dot product between two vectors, local in each body, to zero. The local angle in body i is a parameter.
+ *
+ * @class RotationalLockEquation
+ * @constructor
+ * @extends Equation
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Object} [options]
+ * @param {Number} [options.angle] Angle to add to the local vector in bodyA.
+ */
+function RotationalLockEquation(bodyA, bodyB, options){
+    options = options || {};
+    Equation.call(this, bodyA, bodyB, -Number.MAX_VALUE, Number.MAX_VALUE);
+
+    /**
+     * @property {number} angle
+     */
+    this.angle = options.angle || 0;
+
+    var G = this.G;
+    G[2] =  1;
+    G[5] = -1;
+}
+RotationalLockEquation.prototype = new Equation();
+RotationalLockEquation.prototype.constructor = RotationalLockEquation;
+
+var worldVectorA = vec2.create(),
+    worldVectorB = vec2.create(),
+    xAxis = vec2.fromValues(1,0),
+    yAxis = vec2.fromValues(0,1);
+RotationalLockEquation.prototype.computeGq = function(){
+    vec2.rotate(worldVectorA,xAxis,this.bodyA.angle+this.angle);
+    vec2.rotate(worldVectorB,yAxis,this.bodyB.angle);
+    return vec2.dot(worldVectorA,worldVectorB);
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/equations\\RotationalLockEquation.js","/equations")
+},{"../math/vec2":35,"./Equation":27,"Zbi7gb":4,"buffer":1}],30:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Equation = _dereq_("./Equation"),
+    vec2 = _dereq_('../math/vec2');
+
+module.exports = RotationalVelocityEquation;
+
+/**
+ * Syncs rotational velocity of two bodies, or sets a relative velocity (motor).
+ *
+ * @class RotationalVelocityEquation
+ * @constructor
+ * @extends Equation
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ */
+function RotationalVelocityEquation(bodyA, bodyB){
+    Equation.call(this, bodyA, bodyB, -Number.MAX_VALUE, Number.MAX_VALUE);
+    this.relativeVelocity = 1;
+    this.ratio = 1;
+}
+RotationalVelocityEquation.prototype = new Equation();
+RotationalVelocityEquation.prototype.constructor = RotationalVelocityEquation;
+RotationalVelocityEquation.prototype.computeB = function(a,b,h){
+    var G = this.G;
+    G[2] = -1;
+    G[5] = this.ratio;
+
+    var GiMf = this.computeGiMf();
+    var GW = this.computeGW();
+    var B = - GW * b - h*GiMf;
+
+    return B;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/equations\\RotationalVelocityEquation.js","/equations")
+},{"../math/vec2":35,"./Equation":27,"Zbi7gb":4,"buffer":1}],31:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+/**
+ * Base class for objects that dispatches events.
+ * @class EventEmitter
+ * @constructor
+ */
+var EventEmitter = function () {};
+
+module.exports = EventEmitter;
+
+EventEmitter.prototype = {
+    constructor: EventEmitter,
+
+    /**
+     * Add an event listener
+     * @method on
+     * @param  {String} type
+     * @param  {Function} listener
+     * @return {EventEmitter} The self object, for chainability.
+     */
+    on: function ( type, listener, context ) {
+        listener.context = context || this;
+        if ( this._listeners === undefined ){
+            this._listeners = {};
+        }
+        var listeners = this._listeners;
+        if ( listeners[ type ] === undefined ) {
+            listeners[ type ] = [];
+        }
+        if ( listeners[ type ].indexOf( listener ) === - 1 ) {
+            listeners[ type ].push( listener );
+        }
+        return this;
+    },
+
+    /**
+     * Check if an event listener is added
+     * @method has
+     * @param  {String} type
+     * @param  {Function} listener
+     * @return {Boolean}
+     */
+    has: function ( type, listener ) {
+        if ( this._listeners === undefined ){
+            return false;
+        }
+        var listeners = this._listeners;
+        if(listener){
+            if ( listeners[ type ] !== undefined && listeners[ type ].indexOf( listener ) !== - 1 ) {
+                return true;
+            }
+        } else {
+            if ( listeners[ type ] !== undefined ) {
+                return true;
+            }
+        }
+
+        return false;
+    },
+
+    /**
+     * Remove an event listener
+     * @method off
+     * @param  {String} type
+     * @param  {Function} listener
+     * @return {EventEmitter} The self object, for chainability.
+     */
+    off: function ( type, listener ) {
+        if ( this._listeners === undefined ){
+            return this;
+        }
+        var listeners = this._listeners;
+        var index = listeners[ type ].indexOf( listener );
+        if ( index !== - 1 ) {
+            listeners[ type ].splice( index, 1 );
+        }
+        return this;
+    },
+
+    /**
+     * Emit an event.
+     * @method emit
+     * @param  {Object} event
+     * @param  {String} event.type
+     * @return {EventEmitter} The self object, for chainability.
+     */
+    emit: function ( event ) {
+        if ( this._listeners === undefined ){
+            return this;
+        }
+        var listeners = this._listeners;
+        var listenerArray = listeners[ event.type ];
+        if ( listenerArray !== undefined ) {
+            event.target = this;
+            for ( var i = 0, l = listenerArray.length; i < l; i ++ ) {
+                var listener = listenerArray[ i ];
+                listener.call( listener.context, event );
+            }
+        }
+        return this;
+    }
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/events\\EventEmitter.js","/events")
+},{"Zbi7gb":4,"buffer":1}],32:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Material = _dereq_('./Material');
+var Equation = _dereq_('../equations/Equation');
+
+module.exports = ContactMaterial;
+
+/**
+ * Defines what happens when two materials meet, such as what friction coefficient to use. You can also set other things such as restitution, surface velocity and constraint parameters.
+ * @class ContactMaterial
+ * @constructor
+ * @param {Material} materialA
+ * @param {Material} materialB
+ * @param {Object}   [options]
+ * @param {Number}   [options.friction=0.3]       Friction coefficient.
+ * @param {Number}   [options.restitution=0]      Restitution coefficient aka "bounciness".
+ * @param {Number}   [options.stiffness]          ContactEquation stiffness.
+ * @param {Number}   [options.relaxation]         ContactEquation relaxation.
+ * @param {Number}   [options.frictionStiffness]  FrictionEquation stiffness.
+ * @param {Number}   [options.frictionRelaxation] FrictionEquation relaxation.
+ * @param {Number}   [options.surfaceVelocity=0]  Surface velocity.
+ * @author schteppe
+ */
+function ContactMaterial(materialA, materialB, options){
+    options = options || {};
+
+    if(!(materialA instanceof Material) || !(materialB instanceof Material)){
+        throw new Error("First two arguments must be Material instances.");
+    }
+
+    /**
+     * The contact material identifier
+     * @property id
+     * @type {Number}
+     */
+    this.id = ContactMaterial.idCounter++;
+
+    /**
+     * First material participating in the contact material
+     * @property materialA
+     * @type {Material}
+     */
+    this.materialA = materialA;
+
+    /**
+     * Second material participating in the contact material
+     * @property materialB
+     * @type {Material}
+     */
+    this.materialB = materialB;
+
+    /**
+     * Friction to use in the contact of these two materials
+     * @property friction
+     * @type {Number}
+     */
+    this.friction    =  typeof(options.friction)    !== "undefined" ?   Number(options.friction)    : 0.3;
+
+    /**
+     * Restitution to use in the contact of these two materials
+     * @property restitution
+     * @type {Number}
+     */
+    this.restitution =  typeof(options.restitution) !== "undefined" ?   Number(options.restitution) : 0.0;
+
+    /**
+     * Stiffness of the resulting ContactEquation that this ContactMaterial generate
+     * @property stiffness
+     * @type {Number}
+     */
+    this.stiffness =            typeof(options.stiffness)           !== "undefined" ?   Number(options.stiffness)   : Equation.DEFAULT_STIFFNESS;
+
+    /**
+     * Relaxation of the resulting ContactEquation that this ContactMaterial generate
+     * @property relaxation
+     * @type {Number}
+     */
+    this.relaxation =           typeof(options.relaxation)          !== "undefined" ?   Number(options.relaxation)  : Equation.DEFAULT_RELAXATION;
+
+    /**
+     * Stiffness of the resulting FrictionEquation that this ContactMaterial generate
+     * @property frictionStiffness
+     * @type {Number}
+     */
+    this.frictionStiffness =    typeof(options.frictionStiffness)   !== "undefined" ?   Number(options.frictionStiffness)   : Equation.DEFAULT_STIFFNESS;
+
+    /**
+     * Relaxation of the resulting FrictionEquation that this ContactMaterial generate
+     * @property frictionRelaxation
+     * @type {Number}
+     */
+    this.frictionRelaxation =   typeof(options.frictionRelaxation)  !== "undefined" ?   Number(options.frictionRelaxation)  : Equation.DEFAULT_RELAXATION;
+
+    /**
+     * Will add surface velocity to this material. If bodyA rests on top if bodyB, and the surface velocity is positive, bodyA will slide to the right.
+     * @property {Number} surfaceVelocity
+     */
+    this.surfaceVelocity = typeof(options.surfaceVelocity)    !== "undefined" ?   Number(options.surfaceVelocity)    : 0;
+
+    /**
+     * Offset to be set on ContactEquations. A positive value will make the bodies penetrate more into each other. Can be useful in scenes where contacts need to be more persistent, for example when stacking. Aka "cure for nervous contacts".
+     * @property contactSkinSize
+     * @type {Number}
+     */
+    this.contactSkinSize = 0.005;
+}
+
+ContactMaterial.idCounter = 0;
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/material\\ContactMaterial.js","/material")
+},{"../equations/Equation":27,"./Material":33,"Zbi7gb":4,"buffer":1}],33:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = Material;
+
+/**
+ * Defines a physics material.
+ * @class Material
+ * @constructor
+ * @param {number} id Material identifier
+ * @author schteppe
+ */
+function Material(id){
+    /**
+     * The material identifier
+     * @property id
+     * @type {Number}
+     */
+    this.id = id || Material.idCounter++;
+}
+
+Material.idCounter = 0;
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/material\\Material.js","/material")
+},{"Zbi7gb":4,"buffer":1}],34:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+
+    /*
+        PolyK library
+        url: http://polyk.ivank.net
+        Released under MIT licence.
+
+        Copyright (c) 2012 Ivan Kuckir
+
+        Permission is hereby granted, free of charge, to any person
+        obtaining a copy of this software and associated documentation
+        files (the "Software"), to deal in the Software without
+        restriction, including without limitation the rights to use,
+        copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the
+        Software is furnished to do so, subject to the following
+        conditions:
+
+        The above copyright notice and this permission notice shall be
+        included in all copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+        EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+        OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+        NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+        HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+        WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+        FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+        OTHER DEALINGS IN THE SOFTWARE.
+    */
+
+    var PolyK = {};
+
+    /*
+        Is Polygon self-intersecting?
+
+        O(n^2)
+    */
+    /*
+    PolyK.IsSimple = function(p)
+    {
+        var n = p.length>>1;
+        if(n<4) return true;
+        var a1 = new PolyK._P(), a2 = new PolyK._P();
+        var b1 = new PolyK._P(), b2 = new PolyK._P();
+        var c = new PolyK._P();
+
+        for(var i=0; i<n; i++)
+        {
+            a1.x = p[2*i  ];
+            a1.y = p[2*i+1];
+            if(i==n-1)  { a2.x = p[0    ];  a2.y = p[1    ]; }
+            else        { a2.x = p[2*i+2];  a2.y = p[2*i+3]; }
+
+            for(var j=0; j<n; j++)
+            {
+                if(Math.abs(i-j) < 2) continue;
+                if(j==n-1 && i==0) continue;
+                if(i==n-1 && j==0) continue;
+
+                b1.x = p[2*j  ];
+                b1.y = p[2*j+1];
+                if(j==n-1)  { b2.x = p[0    ];  b2.y = p[1    ]; }
+                else        { b2.x = p[2*j+2];  b2.y = p[2*j+3]; }
+
+                if(PolyK._GetLineIntersection(a1,a2,b1,b2,c) != null) return false;
+            }
+        }
+        return true;
+    }
+
+    PolyK.IsConvex = function(p)
+    {
+        if(p.length<6) return true;
+        var l = p.length - 4;
+        for(var i=0; i<l; i+=2)
+            if(!PolyK._convex(p[i], p[i+1], p[i+2], p[i+3], p[i+4], p[i+5])) return false;
+        if(!PolyK._convex(p[l  ], p[l+1], p[l+2], p[l+3], p[0], p[1])) return false;
+        if(!PolyK._convex(p[l+2], p[l+3], p[0  ], p[1  ], p[2], p[3])) return false;
+        return true;
+    }
+    */
+    PolyK.GetArea = function(p)
+    {
+        if(p.length <6) return 0;
+        var l = p.length - 2;
+        var sum = 0;
+        for(var i=0; i<l; i+=2)
+            sum += (p[i+2]-p[i]) * (p[i+1]+p[i+3]);
+        sum += (p[0]-p[l]) * (p[l+1]+p[1]);
+        return - sum * 0.5;
+    }
+    /*
+    PolyK.GetAABB = function(p)
+    {
+        var minx = Infinity;
+        var miny = Infinity;
+        var maxx = -minx;
+        var maxy = -miny;
+        for(var i=0; i<p.length; i+=2)
+        {
+            minx = Math.min(minx, p[i  ]);
+            maxx = Math.max(maxx, p[i  ]);
+            miny = Math.min(miny, p[i+1]);
+            maxy = Math.max(maxy, p[i+1]);
+        }
+        return {x:minx, y:miny, width:maxx-minx, height:maxy-miny};
+    }
+    */
+
+    PolyK.Triangulate = function(p)
+    {
+        var n = p.length>>1;
+        if(n<3) return [];
+        var tgs = [];
+        var avl = [];
+        for(var i=0; i<n; i++) avl.push(i);
+
+        var i = 0;
+        var al = n;
+        while(al > 3)
+        {
+            var i0 = avl[(i+0)%al];
+            var i1 = avl[(i+1)%al];
+            var i2 = avl[(i+2)%al];
+
+            var ax = p[2*i0],  ay = p[2*i0+1];
+            var bx = p[2*i1],  by = p[2*i1+1];
+            var cx = p[2*i2],  cy = p[2*i2+1];
+
+            var earFound = false;
+            if(PolyK._convex(ax, ay, bx, by, cx, cy))
+            {
+                earFound = true;
+                for(var j=0; j<al; j++)
+                {
+                    var vi = avl[j];
+                    if(vi==i0 || vi==i1 || vi==i2) continue;
+                    if(PolyK._PointInTriangle(p[2*vi], p[2*vi+1], ax, ay, bx, by, cx, cy)) {earFound = false; break;}
+                }
+            }
+            if(earFound)
+            {
+                tgs.push(i0, i1, i2);
+                avl.splice((i+1)%al, 1);
+                al--;
+                i= 0;
+            }
+            else if(i++ > 3*al) break;      // no convex angles :(
+        }
+        tgs.push(avl[0], avl[1], avl[2]);
+        return tgs;
+    }
+    /*
+    PolyK.ContainsPoint = function(p, px, py)
+    {
+        var n = p.length>>1;
+        var ax, ay, bx = p[2*n-2]-px, by = p[2*n-1]-py;
+        var depth = 0;
+        for(var i=0; i<n; i++)
+        {
+            ax = bx;  ay = by;
+            bx = p[2*i  ] - px;
+            by = p[2*i+1] - py;
+            if(ay< 0 && by< 0) continue;    // both "up" or both "donw"
+            if(ay>=0 && by>=0) continue;    // both "up" or both "donw"
+            if(ax< 0 && bx< 0) continue;
+
+            var lx = ax + (bx-ax)*(-ay)/(by-ay);
+            if(lx>0) depth++;
+        }
+        return (depth & 1) == 1;
+    }
+
+    PolyK.Slice = function(p, ax, ay, bx, by)
+    {
+        if(PolyK.ContainsPoint(p, ax, ay) || PolyK.ContainsPoint(p, bx, by)) return [p.slice(0)];
+
+        var a = new PolyK._P(ax, ay);
+        var b = new PolyK._P(bx, by);
+        var iscs = [];  // intersections
+        var ps = [];    // points
+        for(var i=0; i<p.length; i+=2) ps.push(new PolyK._P(p[i], p[i+1]));
+
+        for(var i=0; i<ps.length; i++)
+        {
+            var isc = new PolyK._P(0,0);
+            isc = PolyK._GetLineIntersection(a, b, ps[i], ps[(i+1)%ps.length], isc);
+
+            if(isc)
+            {
+                isc.flag = true;
+                iscs.push(isc);
+                ps.splice(i+1,0,isc);
+                i++;
+            }
+        }
+        if(iscs.length == 0) return [p.slice(0)];
+        var comp = function(u,v) {return PolyK._P.dist(a,u) - PolyK._P.dist(a,v); }
+        iscs.sort(comp);
+
+        var pgs = [];
+        var dir = 0;
+        while(iscs.length > 0)
+        {
+            var n = ps.length;
+            var i0 = iscs[0];
+            var i1 = iscs[1];
+            var ind0 = ps.indexOf(i0);
+            var ind1 = ps.indexOf(i1);
+            var solved = false;
+
+            if(PolyK._firstWithFlag(ps, ind0) == ind1) solved = true;
+            else
+            {
+                i0 = iscs[1];
+                i1 = iscs[0];
+                ind0 = ps.indexOf(i0);
+                ind1 = ps.indexOf(i1);
+                if(PolyK._firstWithFlag(ps, ind0) == ind1) solved = true;
+            }
+            if(solved)
+            {
+                dir--;
+                var pgn = PolyK._getPoints(ps, ind0, ind1);
+                pgs.push(pgn);
+                ps = PolyK._getPoints(ps, ind1, ind0);
+                i0.flag = i1.flag = false;
+                iscs.splice(0,2);
+                if(iscs.length == 0) pgs.push(ps);
+            }
+            else { dir++; iscs.reverse(); }
+            if(dir>1) break;
+        }
+        var result = [];
+        for(var i=0; i<pgs.length; i++)
+        {
+            var pg = pgs[i];
+            var npg = [];
+            for(var j=0; j<pg.length; j++) npg.push(pg[j].x, pg[j].y);
+            result.push(npg);
+        }
+        return result;
+    }
+
+    PolyK.Raycast = function(p, x, y, dx, dy, isc)
+    {
+        var l = p.length - 2;
+        var tp = PolyK._tp;
+        var a1 = tp[0], a2 = tp[1],
+        b1 = tp[2], b2 = tp[3], c = tp[4];
+        a1.x = x; a1.y = y;
+        a2.x = x+dx; a2.y = y+dy;
+
+        if(isc==null) isc = {dist:0, edge:0, norm:{x:0, y:0}, refl:{x:0, y:0}};
+        isc.dist = Infinity;
+
+        for(var i=0; i<l; i+=2)
+        {
+            b1.x = p[i  ];  b1.y = p[i+1];
+            b2.x = p[i+2];  b2.y = p[i+3];
+            var nisc = PolyK._RayLineIntersection(a1, a2, b1, b2, c);
+            if(nisc) PolyK._updateISC(dx, dy, a1, b1, b2, c, i/2, isc);
+        }
+        b1.x = b2.x;  b1.y = b2.y;
+        b2.x = p[0];  b2.y = p[1];
+        var nisc = PolyK._RayLineIntersection(a1, a2, b1, b2, c);
+        if(nisc) PolyK._updateISC(dx, dy, a1, b1, b2, c, p.length/2, isc);
+
+        return (isc.dist != Infinity) ? isc : null;
+    }
+
+    PolyK.ClosestEdge = function(p, x, y, isc)
+    {
+        var l = p.length - 2;
+        var tp = PolyK._tp;
+        var a1 = tp[0],
+        b1 = tp[2], b2 = tp[3], c = tp[4];
+        a1.x = x; a1.y = y;
+
+        if(isc==null) isc = {dist:0, edge:0, point:{x:0, y:0}, norm:{x:0, y:0}};
+        isc.dist = Infinity;
+
+        for(var i=0; i<l; i+=2)
+        {
+            b1.x = p[i  ];  b1.y = p[i+1];
+            b2.x = p[i+2];  b2.y = p[i+3];
+            PolyK._pointLineDist(a1, b1, b2, i>>1, isc);
+        }
+        b1.x = b2.x;  b1.y = b2.y;
+        b2.x = p[0];  b2.y = p[1];
+        PolyK._pointLineDist(a1, b1, b2, l>>1, isc);
+
+        var idst = 1/isc.dist;
+        isc.norm.x = (x-isc.point.x)*idst;
+        isc.norm.y = (y-isc.point.y)*idst;
+        return isc;
+    }
+
+    PolyK._pointLineDist = function(p, a, b, edge, isc)
+    {
+        var x = p.x, y = p.y, x1 = a.x, y1 = a.y, x2 = b.x, y2 = b.y;
+
+        var A = x - x1;
+        var B = y - y1;
+        var C = x2 - x1;
+        var D = y2 - y1;
+
+        var dot = A * C + B * D;
+        var len_sq = C * C + D * D;
+        var param = dot / len_sq;
+
+        var xx, yy;
+
+        if (param < 0 || (x1 == x2 && y1 == y2)) {
+            xx = x1;
+            yy = y1;
+        }
+        else if (param > 1) {
+            xx = x2;
+            yy = y2;
+        }
+        else {
+            xx = x1 + param * C;
+            yy = y1 + param * D;
+        }
+
+        var dx = x - xx;
+        var dy = y - yy;
+        var dst = Math.sqrt(dx * dx + dy * dy);
+        if(dst<isc.dist)
+        {
+            isc.dist = dst;
+            isc.edge = edge;
+            isc.point.x = xx;
+            isc.point.y = yy;
+        }
+    }
+
+    PolyK._updateISC = function(dx, dy, a1, b1, b2, c, edge, isc)
+    {
+        var nrl = PolyK._P.dist(a1, c);
+        if(nrl<isc.dist)
+        {
+            var ibl = 1/PolyK._P.dist(b1, b2);
+            var nx = -(b2.y-b1.y)*ibl;
+            var ny =  (b2.x-b1.x)*ibl;
+            var ddot = 2*(dx*nx+dy*ny);
+            isc.dist = nrl;
+            isc.norm.x = nx;
+            isc.norm.y = ny;
+            isc.refl.x = -ddot*nx+dx;
+            isc.refl.y = -ddot*ny+dy;
+            isc.edge = edge;
+        }
+    }
+
+    PolyK._getPoints = function(ps, ind0, ind1)
+    {
+        var n = ps.length;
+        var nps = [];
+        if(ind1<ind0) ind1 += n;
+        for(var i=ind0; i<= ind1; i++) nps.push(ps[i%n]);
+        return nps;
+    }
+
+    PolyK._firstWithFlag = function(ps, ind)
+    {
+        var n = ps.length;
+        while(true)
+        {
+            ind = (ind+1)%n;
+            if(ps[ind].flag) return ind;
+        }
+    }
+    */
+    PolyK._PointInTriangle = function(px, py, ax, ay, bx, by, cx, cy)
+    {
+        var v0x = cx-ax;
+        var v0y = cy-ay;
+        var v1x = bx-ax;
+        var v1y = by-ay;
+        var v2x = px-ax;
+        var v2y = py-ay;
+
+        var dot00 = v0x*v0x+v0y*v0y;
+        var dot01 = v0x*v1x+v0y*v1y;
+        var dot02 = v0x*v2x+v0y*v2y;
+        var dot11 = v1x*v1x+v1y*v1y;
+        var dot12 = v1x*v2x+v1y*v2y;
+
+        var invDenom = 1 / (dot00 * dot11 - dot01 * dot01);
+        var u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+        var v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+
+        // Check if point is in triangle
+        return (u >= 0) && (v >= 0) && (u + v < 1);
+    }
+    /*
+    PolyK._RayLineIntersection = function(a1, a2, b1, b2, c)
+    {
+        var dax = (a1.x-a2.x), dbx = (b1.x-b2.x);
+        var day = (a1.y-a2.y), dby = (b1.y-b2.y);
+
+        var Den = dax*dby - day*dbx;
+        if (Den == 0) return null;  // parallel
+
+        var A = (a1.x * a2.y - a1.y * a2.x);
+        var B = (b1.x * b2.y - b1.y * b2.x);
+
+        var I = c;
+        var iDen = 1/Den;
+        I.x = ( A*dbx - dax*B ) * iDen;
+        I.y = ( A*dby - day*B ) * iDen;
+
+        if(!PolyK._InRect(I, b1, b2)) return null;
+        if((day>0 && I.y>a1.y) || (day<0 && I.y<a1.y)) return null;
+        if((dax>0 && I.x>a1.x) || (dax<0 && I.x<a1.x)) return null;
+        return I;
+    }
+
+    PolyK._GetLineIntersection = function(a1, a2, b1, b2, c)
+    {
+        var dax = (a1.x-a2.x), dbx = (b1.x-b2.x);
+        var day = (a1.y-a2.y), dby = (b1.y-b2.y);
+
+        var Den = dax*dby - day*dbx;
+        if (Den == 0) return null;  // parallel
+
+        var A = (a1.x * a2.y - a1.y * a2.x);
+        var B = (b1.x * b2.y - b1.y * b2.x);
+
+        var I = c;
+        I.x = ( A*dbx - dax*B ) / Den;
+        I.y = ( A*dby - day*B ) / Den;
+
+        if(PolyK._InRect(I, a1, a2) && PolyK._InRect(I, b1, b2)) return I;
+        return null;
+    }
+
+    PolyK._InRect = function(a, b, c)
+    {
+        if  (b.x == c.x) return (a.y>=Math.min(b.y, c.y) && a.y<=Math.max(b.y, c.y));
+        if  (b.y == c.y) return (a.x>=Math.min(b.x, c.x) && a.x<=Math.max(b.x, c.x));
+
+        if(a.x >= Math.min(b.x, c.x) && a.x <= Math.max(b.x, c.x)
+        && a.y >= Math.min(b.y, c.y) && a.y <= Math.max(b.y, c.y))
+        return true;
+        return false;
+    }
+    */
+    PolyK._convex = function(ax, ay, bx, by, cx, cy)
+    {
+        return (ay-by)*(cx-bx) + (bx-ax)*(cy-by) >= 0;
+    }
+    /*
+    PolyK._P = function(x,y)
+    {
+        this.x = x;
+        this.y = y;
+        this.flag = false;
+    }
+    PolyK._P.prototype.toString = function()
+    {
+        return "Point ["+this.x+", "+this.y+"]";
+    }
+    PolyK._P.dist = function(a,b)
+    {
+        var dx = b.x-a.x;
+        var dy = b.y-a.y;
+        return Math.sqrt(dx*dx + dy*dy);
+    }
+
+    PolyK._tp = [];
+    for(var i=0; i<10; i++) PolyK._tp.push(new PolyK._P(0,0));
+        */
+
+module.exports = PolyK;
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/math\\polyk.js","/math")
+},{"Zbi7gb":4,"buffer":1}],35:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+/* Copyright (c) 2013, Brandon Jones, Colin MacKenzie IV. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice, this
+    list of conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice,
+    this list of conditions and the following disclaimer in the documentation
+    and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
+
+/**
+ * The vec2 object from glMatrix, with some extensions and some removed methods. See http://glmatrix.net.
+ * @class vec2
+ */
+
+var vec2 = module.exports = {};
+
+var Utils = _dereq_('../utils/Utils');
+
+/**
+ * Make a cross product and only return the z component
+ * @method crossLength
+ * @static
+ * @param  {Array} a
+ * @param  {Array} b
+ * @return {Number}
+ */
+vec2.crossLength = function(a,b){
+    return a[0] * b[1] - a[1] * b[0];
+};
+
+/**
+ * Cross product between a vector and the Z component of a vector
+ * @method crossVZ
+ * @static
+ * @param  {Array} out
+ * @param  {Array} vec
+ * @param  {Number} zcomp
+ * @return {Number}
+ */
+vec2.crossVZ = function(out, vec, zcomp){
+    vec2.rotate(out,vec,-Math.PI/2);// Rotate according to the right hand rule
+    vec2.scale(out,out,zcomp);      // Scale with z
+    return out;
+};
+
+/**
+ * Cross product between a vector and the Z component of a vector
+ * @method crossZV
+ * @static
+ * @param  {Array} out
+ * @param  {Number} zcomp
+ * @param  {Array} vec
+ * @return {Number}
+ */
+vec2.crossZV = function(out, zcomp, vec){
+    vec2.rotate(out,vec,Math.PI/2); // Rotate according to the right hand rule
+    vec2.scale(out,out,zcomp);      // Scale with z
+    return out;
+};
+
+/**
+ * Rotate a vector by an angle
+ * @method rotate
+ * @static
+ * @param  {Array} out
+ * @param  {Array} a
+ * @param  {Number} angle
+ */
+vec2.rotate = function(out,a,angle){
+    if(angle !== 0){
+        var c = Math.cos(angle),
+            s = Math.sin(angle),
+            x = a[0],
+            y = a[1];
+        out[0] = c*x -s*y;
+        out[1] = s*x +c*y;
+    } else {
+        out[0] = a[0];
+        out[1] = a[1];
+    }
+};
+
+/**
+ * Rotate a vector 90 degrees clockwise
+ * @method rotate90cw
+ * @static
+ * @param  {Array} out
+ * @param  {Array} a
+ * @param  {Number} angle
+ */
+vec2.rotate90cw = function(out, a) {
+    var x = a[0];
+    var y = a[1];
+    out[0] = y;
+    out[1] = -x;
+};
+
+/**
+ * Transform a point position to local frame.
+ * @method toLocalFrame
+ * @param  {Array} out
+ * @param  {Array} worldPoint
+ * @param  {Array} framePosition
+ * @param  {Number} frameAngle
+ */
+vec2.toLocalFrame = function(out, worldPoint, framePosition, frameAngle){
+    vec2.copy(out, worldPoint);
+    vec2.sub(out, out, framePosition);
+    vec2.rotate(out, out, -frameAngle);
+};
+
+/**
+ * Transform a point position to global frame.
+ * @method toGlobalFrame
+ * @param  {Array} out
+ * @param  {Array} localPoint
+ * @param  {Array} framePosition
+ * @param  {Number} frameAngle
+ */
+vec2.toGlobalFrame = function(out, localPoint, framePosition, frameAngle){
+    vec2.copy(out, localPoint);
+    vec2.rotate(out, out, frameAngle);
+    vec2.add(out, out, framePosition);
+};
+
+/**
+ * Compute centroid of a triangle spanned by vectors a,b,c. See http://easycalculation.com/analytical/learn-centroid.php
+ * @method centroid
+ * @static
+ * @param  {Array} out
+ * @param  {Array} a
+ * @param  {Array} b
+ * @param  {Array} c
+ * @return  {Array} The out object
+ */
+vec2.centroid = function(out, a, b, c){
+    vec2.add(out, a, b);
+    vec2.add(out, out, c);
+    vec2.scale(out, out, 1/3);
+    return out;
+};
+
+/**
+ * Creates a new, empty vec2
+ * @static
+ * @method create
+ * @return {Array} a new 2D vector
+ */
+vec2.create = function() {
+    var out = new Utils.ARRAY_TYPE(2);
+    out[0] = 0;
+    out[1] = 0;
+    return out;
+};
+
+/**
+ * Creates a new vec2 initialized with values from an existing vector
+ * @static
+ * @method clone
+ * @param {Array} a vector to clone
+ * @return {Array} a new 2D vector
+ */
+vec2.clone = function(a) {
+    var out = new Utils.ARRAY_TYPE(2);
+    out[0] = a[0];
+    out[1] = a[1];
+    return out;
+};
+
+/**
+ * Creates a new vec2 initialized with the given values
+ * @static
+ * @method fromValues
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @return {Array} a new 2D vector
+ */
+vec2.fromValues = function(x, y) {
+    var out = new Utils.ARRAY_TYPE(2);
+    out[0] = x;
+    out[1] = y;
+    return out;
+};
+
+/**
+ * Copy the values from one vec2 to another
+ * @static
+ * @method copy
+ * @param {Array} out the receiving vector
+ * @param {Array} a the source vector
+ * @return {Array} out
+ */
+vec2.copy = function(out, a) {
+    out[0] = a[0];
+    out[1] = a[1];
+    return out;
+};
+
+/**
+ * Set the components of a vec2 to the given values
+ * @static
+ * @method set
+ * @param {Array} out the receiving vector
+ * @param {Number} x X component
+ * @param {Number} y Y component
+ * @return {Array} out
+ */
+vec2.set = function(out, x, y) {
+    out[0] = x;
+    out[1] = y;
+    return out;
+};
+
+/**
+ * Adds two vec2's
+ * @static
+ * @method add
+ * @param {Array} out the receiving vector
+ * @param {Array} a the first operand
+ * @param {Array} b the second operand
+ * @return {Array} out
+ */
+vec2.add = function(out, a, b) {
+    out[0] = a[0] + b[0];
+    out[1] = a[1] + b[1];
+    return out;
+};
+
+/**
+ * Subtracts two vec2's
+ * @static
+ * @method subtract
+ * @param {Array} out the receiving vector
+ * @param {Array} a the first operand
+ * @param {Array} b the second operand
+ * @return {Array} out
+ */
+vec2.subtract = function(out, a, b) {
+    out[0] = a[0] - b[0];
+    out[1] = a[1] - b[1];
+    return out;
+};
+
+/**
+ * Alias for vec2.subtract
+ * @static
+ * @method sub
+ */
+vec2.sub = vec2.subtract;
+
+/**
+ * Multiplies two vec2's
+ * @static
+ * @method multiply
+ * @param {Array} out the receiving vector
+ * @param {Array} a the first operand
+ * @param {Array} b the second operand
+ * @return {Array} out
+ */
+vec2.multiply = function(out, a, b) {
+    out[0] = a[0] * b[0];
+    out[1] = a[1] * b[1];
+    return out;
+};
+
+/**
+ * Alias for vec2.multiply
+ * @static
+ * @method mul
+ */
+vec2.mul = vec2.multiply;
+
+/**
+ * Divides two vec2's
+ * @static
+ * @method divide
+ * @param {Array} out the receiving vector
+ * @param {Array} a the first operand
+ * @param {Array} b the second operand
+ * @return {Array} out
+ */
+vec2.divide = function(out, a, b) {
+    out[0] = a[0] / b[0];
+    out[1] = a[1] / b[1];
+    return out;
+};
+
+/**
+ * Alias for vec2.divide
+ * @static
+ * @method div
+ */
+vec2.div = vec2.divide;
+
+/**
+ * Scales a vec2 by a scalar number
+ * @static
+ * @method scale
+ * @param {Array} out the receiving vector
+ * @param {Array} a the vector to scale
+ * @param {Number} b amount to scale the vector by
+ * @return {Array} out
+ */
+vec2.scale = function(out, a, b) {
+    out[0] = a[0] * b;
+    out[1] = a[1] * b;
+    return out;
+};
+
+/**
+ * Calculates the euclidian distance between two vec2's
+ * @static
+ * @method distance
+ * @param {Array} a the first operand
+ * @param {Array} b the second operand
+ * @return {Number} distance between a and b
+ */
+vec2.distance = function(a, b) {
+    var x = b[0] - a[0],
+        y = b[1] - a[1];
+    return Math.sqrt(x*x + y*y);
+};
+
+/**
+ * Alias for vec2.distance
+ * @static
+ * @method dist
+ */
+vec2.dist = vec2.distance;
+
+/**
+ * Calculates the squared euclidian distance between two vec2's
+ * @static
+ * @method squaredDistance
+ * @param {Array} a the first operand
+ * @param {Array} b the second operand
+ * @return {Number} squared distance between a and b
+ */
+vec2.squaredDistance = function(a, b) {
+    var x = b[0] - a[0],
+        y = b[1] - a[1];
+    return x*x + y*y;
+};
+
+/**
+ * Alias for vec2.squaredDistance
+ * @static
+ * @method sqrDist
+ */
+vec2.sqrDist = vec2.squaredDistance;
+
+/**
+ * Calculates the length of a vec2
+ * @static
+ * @method length
+ * @param {Array} a vector to calculate length of
+ * @return {Number} length of a
+ */
+vec2.length = function (a) {
+    var x = a[0],
+        y = a[1];
+    return Math.sqrt(x*x + y*y);
+};
+
+/**
+ * Alias for vec2.length
+ * @method len
+ * @static
+ */
+vec2.len = vec2.length;
+
+/**
+ * Calculates the squared length of a vec2
+ * @static
+ * @method squaredLength
+ * @param {Array} a vector to calculate squared length of
+ * @return {Number} squared length of a
+ */
+vec2.squaredLength = function (a) {
+    var x = a[0],
+        y = a[1];
+    return x*x + y*y;
+};
+
+/**
+ * Alias for vec2.squaredLength
+ * @static
+ * @method sqrLen
+ */
+vec2.sqrLen = vec2.squaredLength;
+
+/**
+ * Negates the components of a vec2
+ * @static
+ * @method negate
+ * @param {Array} out the receiving vector
+ * @param {Array} a vector to negate
+ * @return {Array} out
+ */
+vec2.negate = function(out, a) {
+    out[0] = -a[0];
+    out[1] = -a[1];
+    return out;
+};
+
+/**
+ * Normalize a vec2
+ * @static
+ * @method normalize
+ * @param {Array} out the receiving vector
+ * @param {Array} a vector to normalize
+ * @return {Array} out
+ */
+vec2.normalize = function(out, a) {
+    var x = a[0],
+        y = a[1];
+    var len = x*x + y*y;
+    if (len > 0) {
+        //TODO: evaluate use of glm_invsqrt here?
+        len = 1 / Math.sqrt(len);
+        out[0] = a[0] * len;
+        out[1] = a[1] * len;
+    }
+    return out;
+};
+
+/**
+ * Calculates the dot product of two vec2's
+ * @static
+ * @method dot
+ * @param {Array} a the first operand
+ * @param {Array} b the second operand
+ * @return {Number} dot product of a and b
+ */
+vec2.dot = function (a, b) {
+    return a[0] * b[0] + a[1] * b[1];
+};
+
+/**
+ * Returns a string representation of a vector
+ * @static
+ * @method str
+ * @param {Array} vec vector to represent as a string
+ * @return {String} string representation of the vector
+ */
+vec2.str = function (a) {
+    return 'vec2(' + a[0] + ', ' + a[1] + ')';
+};
+
+vec2.lerp = function (out, a, b, t) {
+    var ax = a[0],
+        ay = a[1];
+    out[0] = ax + t * (b[0] - ax);
+    out[1] = ay + t * (b[1] - ay);
+    return out;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/math\\vec2.js","/math")
+},{"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],36:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2')
+,   decomp = _dereq_('poly-decomp')
+,   Convex = _dereq_('../shapes/Convex')
+,   AABB = _dereq_('../collision/AABB')
+,   EventEmitter = _dereq_('../events/EventEmitter');
+
+module.exports = Body;
+
+/**
+ * A rigid body. Has got a center of mass, position, velocity and a number of
+ * shapes that are used for collisions.
+ *
+ * @class Body
+ * @constructor
+ * @extends EventEmitter
+ * @param {Object}              [options]
+ * @param {Number}              [options.mass=0]    A number >= 0. If zero, the .type will be set to Body.STATIC.
+ * @param {Array}               [options.position]
+ * @param {Array}               [options.velocity]
+ * @param {Number}              [options.angle=0]
+ * @param {Number}              [options.angularVelocity=0]
+ * @param {Array}               [options.force]
+ * @param {Number}              [options.angularForce=0]
+ * @param {Number}              [options.fixedRotation=false]
+ * @param {Number}              [options.ccdSpeedThreshold=-1]
+ * @param {Number}              [options.ccdIterations=10]
+ *
+ * @example
+ *
+ *     // Create a typical dynamic body
+ *     var body = new Body({
+ *         mass: 1,
+ *         position: [0, 0],
+ *         angle: 0,
+ *         velocity: [0, 0],
+ *         angularVelocity: 0
+ *     });
+ *
+ *     // Add a circular shape to the body
+ *     body.addShape(new Circle(1));
+ *
+ *     // Add the body to the world
+ *     world.addBody(body);
+ */
+function Body(options){
+    options = options || {};
+
+    EventEmitter.call(this);
+
+    /**
+     * The body identifyer
+     * @property id
+     * @type {Number}
+     */
+    this.id = ++Body._idCounter;
+
+    /**
+     * The world that this body is added to. This property is set to NULL if the body is not added to any world.
+     * @property world
+     * @type {World}
+     */
+    this.world = null;
+
+    /**
+     * The shapes of the body. The local transform of the shape in .shapes[i] is
+     * defined by .shapeOffsets[i] and .shapeAngles[i].
+     *
+     * @property shapes
+     * @type {Array}
+     */
+    this.shapes = [];
+
+    /**
+     * The local shape offsets, relative to the body center of mass. This is an
+     * array of Array.
+     * @property shapeOffsets
+     * @type {Array}
+     */
+    this.shapeOffsets = [];
+
+    /**
+     * The body-local shape angle transforms. This is an array of numbers (angles).
+     * @property shapeAngles
+     * @type {Array}
+     */
+    this.shapeAngles = [];
+
+    /**
+     * The mass of the body.
+     * @property mass
+     * @type {number}
+     */
+    this.mass = options.mass || 0;
+
+    /**
+     * The inverse mass of the body.
+     * @property invMass
+     * @type {number}
+     */
+    this.invMass = 0;
+
+    /**
+     * The inertia of the body around the Z axis.
+     * @property inertia
+     * @type {number}
+     */
+    this.inertia = 0;
+
+    /**
+     * The inverse inertia of the body.
+     * @property invInertia
+     * @type {number}
+     */
+    this.invInertia = 0;
+
+    this.invMassSolve = 0;
+    this.invInertiaSolve = 0;
+
+    /**
+     * Set to true if you want to fix the rotation of the body.
+     * @property fixedRotation
+     * @type {Boolean}
+     */
+    this.fixedRotation = !!options.fixedRotation;
+
+    /**
+     * The position of the body
+     * @property position
+     * @type {Array}
+     */
+    this.position = vec2.fromValues(0,0);
+    if(options.position){
+        vec2.copy(this.position, options.position);
+    }
+
+    /**
+     * The interpolated position of the body.
+     * @property interpolatedPosition
+     * @type {Array}
+     */
+    this.interpolatedPosition = vec2.fromValues(0,0);
+
+    /**
+     * The interpolated angle of the body.
+     * @property interpolatedAngle
+     * @type {Number}
+     */
+    this.interpolatedAngle = 0;
+
+    /**
+     * The previous position of the body.
+     * @property previousPosition
+     * @type {Array}
+     */
+    this.previousPosition = vec2.fromValues(0,0);
+
+    /**
+     * The previous angle of the body.
+     * @property previousAngle
+     * @type {Number}
+     */
+    this.previousAngle = 0;
+
+    /**
+     * The velocity of the body
+     * @property velocity
+     * @type {Array}
+     */
+    this.velocity = vec2.fromValues(0,0);
+    if(options.velocity){
+        vec2.copy(this.velocity, options.velocity);
+    }
+
+    /**
+     * Constraint velocity that was added to the body during the last step.
+     * @property vlambda
+     * @type {Array}
+     */
+    this.vlambda = vec2.fromValues(0,0);
+
+    /**
+     * Angular constraint velocity that was added to the body during last step.
+     * @property wlambda
+     * @type {Array}
+     */
+    this.wlambda = 0;
+
+    /**
+     * The angle of the body, in radians.
+     * @property angle
+     * @type {number}
+     * @example
+     *     // The angle property is not normalized to the interval 0 to 2*pi, it can be any value.
+     *     // If you need a value between 0 and 2*pi, use the following function to normalize it.
+     *     function normalizeAngle(angle){
+     *         angle = angle % (2*Math.PI);
+     *         if(angle < 0){
+     *             angle += (2*Math.PI);
+     *         }
+     *         return angle;
+     *     }
+     */
+    this.angle = options.angle || 0;
+
+    /**
+     * The angular velocity of the body, in radians per second.
+     * @property angularVelocity
+     * @type {number}
+     */
+    this.angularVelocity = options.angularVelocity || 0;
+
+    /**
+     * The force acting on the body. Since the body force (and {{#crossLink "Body/angularForce:property"}}{{/crossLink}}) will be zeroed after each step, so you need to set the force before each step.
+     * @property force
+     * @type {Array}
+     *
+     * @example
+     *     // This produces a forcefield of 1 Newton in the positive x direction.
+     *     for(var i=0; i<numSteps; i++){
+     *         body.force[0] = 1;
+     *         world.step(1/60);
+     *     }
+     *
+     * @example
+     *     // This will apply a rotational force on the body
+     *     for(var i=0; i<numSteps; i++){
+     *         body.angularForce = -3;
+     *         world.step(1/60);
+     *     }
+     */
+    this.force = vec2.create();
+    if(options.force){
+        vec2.copy(this.force, options.force);
+    }
+
+    /**
+     * The angular force acting on the body. See {{#crossLink "Body/force:property"}}{{/crossLink}}.
+     * @property angularForce
+     * @type {number}
+     */
+    this.angularForce = options.angularForce || 0;
+
+    /**
+     * The linear damping acting on the body in the velocity direction. Should be a value between 0 and 1.
+     * @property damping
+     * @type {Number}
+     * @default 0.1
+     */
+    this.damping = typeof(options.damping) === "number" ? options.damping : 0.1;
+
+    /**
+     * The angular force acting on the body. Should be a value between 0 and 1.
+     * @property angularDamping
+     * @type {Number}
+     * @default 0.1
+     */
+    this.angularDamping = typeof(options.angularDamping) === "number" ? options.angularDamping : 0.1;
+
+    /**
+     * The type of motion this body has. Should be one of: {{#crossLink "Body/STATIC:property"}}Body.STATIC{{/crossLink}}, {{#crossLink "Body/DYNAMIC:property"}}Body.DYNAMIC{{/crossLink}} and {{#crossLink "Body/KINEMATIC:property"}}Body.KINEMATIC{{/crossLink}}.
+     *
+     * * Static bodies do not move, and they do not respond to forces or collision.
+     * * Dynamic bodies body can move and respond to collisions and forces.
+     * * Kinematic bodies only moves according to its .velocity, and does not respond to collisions or force.
+     *
+     * @property type
+     * @type {number}
+     *
+     * @example
+     *     // Bodies are static by default. Static bodies will never move.
+     *     var body = new Body();
+     *     console.log(body.type == Body.STATIC); // true
+     *
+     * @example
+     *     // By setting the mass of a body to a nonzero number, the body
+     *     // will become dynamic and will move and interact with other bodies.
+     *     var dynamicBody = new Body({
+     *         mass : 1
+     *     });
+     *     console.log(dynamicBody.type == Body.DYNAMIC); // true
+     *
+     * @example
+     *     // Kinematic bodies will only move if you change their velocity.
+     *     var kinematicBody = new Body({
+     *         type: Body.KINEMATIC // Type can be set via the options object.
+     *     });
+     */
+    this.type = Body.STATIC;
+
+    if(typeof(options.type) !== 'undefined'){
+        this.type = options.type;
+    } else if(!options.mass){
+        this.type = Body.STATIC;
+    } else {
+        this.type = Body.DYNAMIC;
+    }
+
+    /**
+     * Bounding circle radius.
+     * @property boundingRadius
+     * @type {Number}
+     */
+    this.boundingRadius = 0;
+
+    /**
+     * Bounding box of this body.
+     * @property aabb
+     * @type {AABB}
+     */
+    this.aabb = new AABB();
+
+    /**
+     * Indicates if the AABB needs update. Update it with {{#crossLink "Body/updateAABB:method"}}.updateAABB(){{/crossLink}}.
+     * @property aabbNeedsUpdate
+     * @type {Boolean}
+     * @see updateAABB
+     *
+     * @example
+     *     // Force update the AABB
+     *     body.aabbNeedsUpdate = true;
+     *     body.updateAABB();
+     *     console.log(body.aabbNeedsUpdate); // false
+     */
+    this.aabbNeedsUpdate = true;
+
+    /**
+     * If true, the body will automatically fall to sleep. Note that you need to enable sleeping in the {{#crossLink "World"}}{{/crossLink}} before anything will happen.
+     * @property allowSleep
+     * @type {Boolean}
+     * @default true
+     */
+    this.allowSleep = true;
+
+    this.wantsToSleep = false;
+
+    /**
+     * One of {{#crossLink "Body/AWAKE:property"}}Body.AWAKE{{/crossLink}}, {{#crossLink "Body/SLEEPY:property"}}Body.SLEEPY{{/crossLink}} and {{#crossLink "Body/SLEEPING:property"}}Body.SLEEPING{{/crossLink}}.
+     *
+     * The body is initially Body.AWAKE. If its velocity norm is below .sleepSpeedLimit, the sleepState will become Body.SLEEPY. If the body continues to be Body.SLEEPY for .sleepTimeLimit seconds, it will fall asleep (Body.SLEEPY).
+     *
+     * @property sleepState
+     * @type {Number}
+     * @default Body.AWAKE
+     */
+    this.sleepState = Body.AWAKE;
+
+    /**
+     * If the speed (the norm of the velocity) is smaller than this value, the body is considered sleepy.
+     * @property sleepSpeedLimit
+     * @type {Number}
+     * @default 0.2
+     */
+    this.sleepSpeedLimit = 0.2;
+
+    /**
+     * If the body has been sleepy for this sleepTimeLimit seconds, it is considered sleeping.
+     * @property sleepTimeLimit
+     * @type {Number}
+     * @default 1
+     */
+    this.sleepTimeLimit = 1;
+
+    /**
+     * Gravity scaling factor. If you want the body to ignore gravity, set this to zero. If you want to reverse gravity, set it to -1.
+     * @property {Number} gravityScale
+     * @default 1
+     */
+    this.gravityScale = 1;
+
+    /**
+     * Whether to produce contact forces when in contact with other bodies. Note that contacts will be generated, but they will be disabled. That means that this body will move through other bodies, but it will still trigger contact events, etc.
+     * @property {Boolean} collisionResponse
+     */
+    this.collisionResponse = true;
+
+    /**
+     * How long the body has been sleeping.
+     * @property {Number} idleTime
+     */
+    this.idleTime = 0;
+
+    /**
+     * The last time when the body went to SLEEPY state.
+     * @property {Number} timeLastSleepy
+     * @private
+     */
+    this.timeLastSleepy = 0;
+
+    /**
+     * If the body speed exceeds this threshold, CCD (continuous collision detection) will be enabled. Set it to a negative number to disable CCD completely for this body.
+     * @property {number} ccdSpeedThreshold
+     * @default -1
+     */
+    this.ccdSpeedThreshold = options.ccdSpeedThreshold !== undefined ? options.ccdSpeedThreshold : -1;
+
+    /**
+     * The number of iterations that should be used when searching for the time of impact during CCD. A larger number will assure that there's a small penetration on CCD collision, but a small number will give more performance.
+     * @property {number} ccdIterations
+     * @default 10
+     */
+    this.ccdIterations = options.ccdIterations !== undefined ? options.ccdIterations : 10;
+
+    this.concavePath = null;
+
+    this._wakeUpAfterNarrowphase = false;
+
+    this.updateMassProperties();
+}
+Body.prototype = new EventEmitter();
+Body.prototype.constructor = Body;
+
+Body._idCounter = 0;
+
+Body.prototype.updateSolveMassProperties = function(){
+    if(this.sleepState === Body.SLEEPING || this.type === Body.KINEMATIC){
+        this.invMassSolve = 0;
+        this.invInertiaSolve = 0;
+    } else {
+        this.invMassSolve = this.invMass;
+        this.invInertiaSolve = this.invInertia;
+    }
+};
+
+/**
+ * Set the total density of the body
+ * @method setDensity
+ */
+Body.prototype.setDensity = function(density) {
+    var totalArea = this.getArea();
+    this.mass = totalArea * density;
+    this.updateMassProperties();
+};
+
+/**
+ * Get the total area of all shapes in the body
+ * @method getArea
+ * @return {Number}
+ */
+Body.prototype.getArea = function() {
+    var totalArea = 0;
+    for(var i=0; i<this.shapes.length; i++){
+        totalArea += this.shapes[i].area;
+    }
+    return totalArea;
+};
+
+/**
+ * Get the AABB from the body. The AABB is updated if necessary.
+ * @method getAABB
+ */
+Body.prototype.getAABB = function(){
+    if(this.aabbNeedsUpdate){
+        this.updateAABB();
+    }
+    return this.aabb;
+};
+
+var shapeAABB = new AABB(),
+    tmp = vec2.create();
+
+/**
+ * Updates the AABB of the Body
+ * @method updateAABB
+ */
+Body.prototype.updateAABB = function() {
+    var shapes = this.shapes,
+        shapeOffsets = this.shapeOffsets,
+        shapeAngles = this.shapeAngles,
+        N = shapes.length,
+        offset = tmp,
+        bodyAngle = this.angle;
+
+    for(var i=0; i!==N; i++){
+        var shape = shapes[i],
+            angle = shapeAngles[i] + bodyAngle;
+
+        // Get shape world offset
+        vec2.rotate(offset, shapeOffsets[i], bodyAngle);
+        vec2.add(offset, offset, this.position);
+
+        // Get shape AABB
+        shape.computeAABB(shapeAABB, offset, angle);
+
+        if(i===0){
+            this.aabb.copy(shapeAABB);
+        } else {
+            this.aabb.extend(shapeAABB);
+        }
+    }
+
+    this.aabbNeedsUpdate = false;
+};
+
+/**
+ * Update the bounding radius of the body. Should be done if any of the shapes
+ * are changed.
+ * @method updateBoundingRadius
+ */
+Body.prototype.updateBoundingRadius = function(){
+    var shapes = this.shapes,
+        shapeOffsets = this.shapeOffsets,
+        N = shapes.length,
+        radius = 0;
+
+    for(var i=0; i!==N; i++){
+        var shape = shapes[i],
+            offset = vec2.length(shapeOffsets[i]),
+            r = shape.boundingRadius;
+        if(offset + r > radius){
+            radius = offset + r;
+        }
+    }
+
+    this.boundingRadius = radius;
+};
+
+/**
+ * Add a shape to the body. You can pass a local transform when adding a shape,
+ * so that the shape gets an offset and angle relative to the body center of mass.
+ * Will automatically update the mass properties and bounding radius.
+ *
+ * @method addShape
+ * @param  {Shape}              shape
+ * @param  {Array} [offset] Local body offset of the shape.
+ * @param  {Number}             [angle]  Local body angle.
+ *
+ * @example
+ *     var body = new Body(),
+ *         shape = new Circle();
+ *
+ *     // Add the shape to the body, positioned in the center
+ *     body.addShape(shape);
+ *
+ *     // Add another shape to the body, positioned 1 unit length from the body center of mass along the local x-axis.
+ *     body.addShape(shape,[1,0]);
+ *
+ *     // Add another shape to the body, positioned 1 unit length from the body center of mass along the local y-axis, and rotated 90 degrees CCW.
+ *     body.addShape(shape,[0,1],Math.PI/2);
+ */
+Body.prototype.addShape = function(shape,offset,angle){
+    angle = angle || 0.0;
+
+    // Copy the offset vector
+    if(offset){
+        offset = vec2.fromValues(offset[0],offset[1]);
+    } else {
+        offset = vec2.fromValues(0,0);
+    }
+
+    this.shapes      .push(shape);
+    this.shapeOffsets.push(offset);
+    this.shapeAngles .push(angle);
+    this.updateMassProperties();
+    this.updateBoundingRadius();
+
+    this.aabbNeedsUpdate = true;
+};
+
+/**
+ * Remove a shape
+ * @method removeShape
+ * @param  {Shape}  shape
+ * @return {Boolean}       True if the shape was found and removed, else false.
+ */
+Body.prototype.removeShape = function(shape){
+    var idx = this.shapes.indexOf(shape);
+
+    if(idx !== -1){
+        this.shapes.splice(idx,1);
+        this.shapeOffsets.splice(idx,1);
+        this.shapeAngles.splice(idx,1);
+        this.aabbNeedsUpdate = true;
+        return true;
+    } else {
+        return false;
+    }
+};
+
+/**
+ * Updates .inertia, .invMass, .invInertia for this Body. Should be called when
+ * changing the structure or mass of the Body.
+ *
+ * @method updateMassProperties
+ *
+ * @example
+ *     body.mass += 1;
+ *     body.updateMassProperties();
+ */
+Body.prototype.updateMassProperties = function(){
+    if(this.type === Body.STATIC || this.type === Body.KINEMATIC){
+
+        this.mass = Number.MAX_VALUE;
+        this.invMass = 0;
+        this.inertia = Number.MAX_VALUE;
+        this.invInertia = 0;
+
+    } else {
+
+        var shapes = this.shapes,
+            N = shapes.length,
+            m = this.mass / N,
+            I = 0;
+
+        if(!this.fixedRotation){
+            for(var i=0; i<N; i++){
+                var shape = shapes[i],
+                    r2 = vec2.squaredLength(this.shapeOffsets[i]),
+                    Icm = shape.computeMomentOfInertia(m);
+                I += Icm + m*r2;
+            }
+            this.inertia = I;
+            this.invInertia = I>0 ? 1/I : 0;
+
+        } else {
+            this.inertia = Number.MAX_VALUE;
+            this.invInertia = 0;
+        }
+
+        // Inverse mass properties are easy
+        this.invMass = 1/this.mass;// > 0 ? 1/this.mass : 0;
+    }
+};
+
+var Body_applyForce_r = vec2.create();
+
+/**
+ * Apply force to a world point. This could for example be a point on the RigidBody surface. Applying force this way will add to Body.force and Body.angularForce.
+ * @method applyForce
+ * @param {Array} force The force to add.
+ * @param {Array} worldPoint A world point to apply the force on.
+ */
+Body.prototype.applyForce = function(force,worldPoint){
+    // Compute point position relative to the body center
+    var r = Body_applyForce_r;
+    vec2.sub(r,worldPoint,this.position);
+
+    // Add linear force
+    vec2.add(this.force,this.force,force);
+
+    // Compute produced rotational force
+    var rotForce = vec2.crossLength(r,force);
+
+    // Add rotational force
+    this.angularForce += rotForce;
+};
+
+/**
+ * Transform a world point to local body frame.
+ * @method toLocalFrame
+ * @param  {Array} out          The vector to store the result in
+ * @param  {Array} worldPoint   The input world vector
+ */
+Body.prototype.toLocalFrame = function(out, worldPoint){
+    vec2.toLocalFrame(out, worldPoint, this.position, this.angle);
+};
+
+/**
+ * Transform a local point to world frame.
+ * @method toWorldFrame
+ * @param  {Array} out          The vector to store the result in
+ * @param  {Array} localPoint   The input local vector
+ */
+Body.prototype.toWorldFrame = function(out, localPoint){
+    vec2.toGlobalFrame(out, localPoint, this.position, this.angle);
+};
+
+/**
+ * Reads a polygon shape path, and assembles convex shapes from that and puts them at proper offset points.
+ * @method fromPolygon
+ * @param {Array} path An array of 2d vectors, e.g. [[0,0],[0,1],...] that resembles a concave or convex polygon. The shape must be simple and without holes.
+ * @param {Object} [options]
+ * @param {Boolean} [options.optimalDecomp=false]   Set to true if you need optimal decomposition. Warning: very slow for polygons with more than 10 vertices.
+ * @param {Boolean} [options.skipSimpleCheck=false] Set to true if you already know that the path is not intersecting itself.
+ * @param {Boolean|Number} [options.removeCollinearPoints=false] Set to a number (angle threshold value) to remove collinear points, or false to keep all points.
+ * @return {Boolean} True on success, else false.
+ */
+Body.prototype.fromPolygon = function(path,options){
+    options = options || {};
+
+    // Remove all shapes
+    for(var i=this.shapes.length; i>=0; --i){
+        this.removeShape(this.shapes[i]);
+    }
+
+    var p = new decomp.Polygon();
+    p.vertices = path;
+
+    // Make it counter-clockwise
+    p.makeCCW();
+
+    if(typeof(options.removeCollinearPoints) === "number"){
+        p.removeCollinearPoints(options.removeCollinearPoints);
+    }
+
+    // Check if any line segment intersects the path itself
+    if(typeof(options.skipSimpleCheck) === "undefined"){
+        if(!p.isSimple()){
+            return false;
+        }
+    }
+
+    // Save this path for later
+    this.concavePath = p.vertices.slice(0);
+    for(var i=0; i<this.concavePath.length; i++){
+        var v = [0,0];
+        vec2.copy(v,this.concavePath[i]);
+        this.concavePath[i] = v;
+    }
+
+    // Slow or fast decomp?
+    var convexes;
+    if(options.optimalDecomp){
+        convexes = p.decomp();
+    } else {
+        convexes = p.quickDecomp();
+    }
+
+    var cm = vec2.create();
+
+    // Add convexes
+    for(var i=0; i!==convexes.length; i++){
+        // Create convex
+        var c = new Convex(convexes[i].vertices);
+
+        // Move all vertices so its center of mass is in the local center of the convex
+        for(var j=0; j!==c.vertices.length; j++){
+            var v = c.vertices[j];
+            vec2.sub(v,v,c.centerOfMass);
+        }
+
+        vec2.scale(cm,c.centerOfMass,1);
+        c.updateTriangles();
+        c.updateCenterOfMass();
+        c.updateBoundingRadius();
+
+        // Add the shape
+        this.addShape(c,cm);
+    }
+
+    this.adjustCenterOfMass();
+
+    this.aabbNeedsUpdate = true;
+
+    return true;
+};
+
+var adjustCenterOfMass_tmp1 = vec2.fromValues(0,0),
+    adjustCenterOfMass_tmp2 = vec2.fromValues(0,0),
+    adjustCenterOfMass_tmp3 = vec2.fromValues(0,0),
+    adjustCenterOfMass_tmp4 = vec2.fromValues(0,0);
+
+/**
+ * Moves the shape offsets so their center of mass becomes the body center of mass.
+ * @method adjustCenterOfMass
+ */
+Body.prototype.adjustCenterOfMass = function(){
+    var offset_times_area = adjustCenterOfMass_tmp2,
+        sum =               adjustCenterOfMass_tmp3,
+        cm =                adjustCenterOfMass_tmp4,
+        totalArea =         0;
+    vec2.set(sum,0,0);
+
+    for(var i=0; i!==this.shapes.length; i++){
+        var s = this.shapes[i],
+            offset = this.shapeOffsets[i];
+        vec2.scale(offset_times_area,offset,s.area);
+        vec2.add(sum,sum,offset_times_area);
+        totalArea += s.area;
+    }
+
+    vec2.scale(cm,sum,1/totalArea);
+
+    // Now move all shapes
+    for(var i=0; i!==this.shapes.length; i++){
+        var s = this.shapes[i],
+            offset = this.shapeOffsets[i];
+
+        // Offset may be undefined. Fix that.
+        if(!offset){
+            offset = this.shapeOffsets[i] = vec2.create();
+        }
+
+        vec2.sub(offset,offset,cm);
+    }
+
+    // Move the body position too
+    vec2.add(this.position,this.position,cm);
+
+    // And concave path
+    for(var i=0; this.concavePath && i<this.concavePath.length; i++){
+        vec2.sub(this.concavePath[i], this.concavePath[i], cm);
+    }
+
+    this.updateMassProperties();
+    this.updateBoundingRadius();
+};
+
+/**
+ * Sets the force on the body to zero.
+ * @method setZeroForce
+ */
+Body.prototype.setZeroForce = function(){
+    vec2.set(this.force,0.0,0.0);
+    this.angularForce = 0.0;
+};
+
+Body.prototype.resetConstraintVelocity = function(){
+    var b = this,
+        vlambda = b.vlambda;
+    vec2.set(vlambda,0,0);
+    b.wlambda = 0;
+};
+
+Body.prototype.addConstraintVelocity = function(){
+    var b = this,
+        v = b.velocity;
+    vec2.add( v, v, b.vlambda);
+    b.angularVelocity += b.wlambda;
+};
+
+/**
+ * Apply damping, see <a href="http://code.google.com/p/bullet/issues/detail?id=74">this</a> for details.
+ * @method applyDamping
+ * @param  {number} dt Current time step
+ */
+Body.prototype.applyDamping = function(dt){
+    if(this.type === Body.DYNAMIC){ // Only for dynamic bodies
+        var v = this.velocity;
+        vec2.scale(v, v, Math.pow(1.0 - this.damping,dt));
+        this.angularVelocity *= Math.pow(1.0 - this.angularDamping,dt);
+    }
+};
+
+/**
+ * Wake the body up. Normally you should not need this, as the body is automatically awoken at events such as collisions.
+ * Sets the sleepState to {{#crossLink "Body/AWAKE:property"}}Body.AWAKE{{/crossLink}} and emits the wakeUp event if the body wasn't awake before.
+ * @method wakeUp
+ */
+Body.prototype.wakeUp = function(){
+    var s = this.sleepState;
+    this.sleepState = Body.AWAKE;
+    this.idleTime = 0;
+    if(s !== Body.AWAKE){
+        this.emit(Body.wakeUpEvent);
+    }
+};
+
+/**
+ * Force body sleep
+ * @method sleep
+ */
+Body.prototype.sleep = function(){
+    this.sleepState = Body.SLEEPING;
+    this.angularVelocity = 0;
+    this.angularForce = 0;
+    vec2.set(this.velocity,0,0);
+    vec2.set(this.force,0,0);
+    this.emit(Body.sleepEvent);
+};
+
+/**
+ * Called every timestep to update internal sleep timer and change sleep state if needed.
+ * @method sleepTick
+ * @param {number} time The world time in seconds
+ * @param {boolean} dontSleep
+ * @param {number} dt
+ */
+Body.prototype.sleepTick = function(time, dontSleep, dt){
+    if(!this.allowSleep || this.type === Body.SLEEPING){
+        return;
+    }
+
+    this.wantsToSleep = false;
+
+    var sleepState = this.sleepState,
+        speedSquared = vec2.squaredLength(this.velocity) + Math.pow(this.angularVelocity,2),
+        speedLimitSquared = Math.pow(this.sleepSpeedLimit,2);
+
+    // Add to idle time
+    if(speedSquared >= speedLimitSquared){
+        this.idleTime = 0;
+        this.sleepState = Body.AWAKE;
+    } else {
+        this.idleTime += dt;
+        this.sleepState = Body.SLEEPY;
+    }
+    if(this.idleTime > this.sleepTimeLimit){
+        if(!dontSleep){
+            this.sleep();
+        } else {
+            this.wantsToSleep = true;
+        }
+    }
+
+    /*
+    if(sleepState===Body.AWAKE && speedSquared < speedLimitSquared){
+        this.sleepState = Body.SLEEPY; // Sleepy
+        this.timeLastSleepy = time;
+        this.emit(Body.sleepyEvent);
+    } else if(sleepState===Body.SLEEPY && speedSquared >= speedLimitSquared){
+        this.wakeUp(); // Wake up
+    } else if(sleepState===Body.SLEEPY && (time - this.timeLastSleepy ) > this.sleepTimeLimit){
+        this.wantsToSleep = true;
+        if(!dontSleep){
+            this.sleep();
+        }
+    }
+    */
+};
+
+Body.prototype.getVelocityFromPosition = function(store, timeStep){
+    store = store || vec2.create();
+    vec2.sub(store, this.position, this.previousPosition);
+    vec2.scale(store, store, 1/timeStep);
+    return store;
+};
+
+Body.prototype.getAngularVelocityFromPosition = function(timeStep){
+    return (this.angle - this.previousAngle) / timeStep;
+};
+
+/**
+ * Check if the body is overlapping another body. Note that this method only works if the body was added to a World and if at least one step was taken.
+ * @method overlaps
+ * @param  {Body} body
+ * @return {boolean}
+ */
+Body.prototype.overlaps = function(body){
+    return this.world.overlapKeeper.bodiesAreOverlapping(this, body);
+};
+
+var integrate_fhMinv = vec2.create();
+var integrate_velodt = vec2.create();
+
+/**
+ * Move the body forward in time given its current velocity.
+ * @method integrate
+ * @param  {Number} dt
+ */
+Body.prototype.integrate = function(dt){
+    var minv = this.invMass,
+        f = this.force,
+        pos = this.position,
+        velo = this.velocity;
+
+    // Save old position
+    vec2.copy(this.previousPosition, this.position);
+    this.previousAngle = this.angle;
+
+    // Velocity update
+    if(!this.fixedRotation){
+        this.angularVelocity += this.angularForce * this.invInertia * dt;
+    }
+    vec2.scale(integrate_fhMinv, f, dt * minv);
+    vec2.add(velo, integrate_fhMinv, velo);
+
+    // CCD
+    if(!this.integrateToTimeOfImpact(dt)){
+
+        // Regular position update
+        vec2.scale(integrate_velodt, velo, dt);
+        vec2.add(pos, pos, integrate_velodt);
+        if(!this.fixedRotation){
+            this.angle += this.angularVelocity * dt;
+        }
+    }
+
+    this.aabbNeedsUpdate = true;
+};
+
+var direction = vec2.create();
+var end = vec2.create();
+var startToEnd = vec2.create();
+var rememberPosition = vec2.create();
+Body.prototype.integrateToTimeOfImpact = function(dt){
+
+    if(this.ccdSpeedThreshold < 0 || vec2.squaredLength(this.velocity) < Math.pow(this.ccdSpeedThreshold, 2)){
+        return false;
+    }
+
+    vec2.normalize(direction, this.velocity);
+
+    vec2.scale(end, this.velocity, dt);
+    vec2.add(end, end, this.position);
+
+    vec2.sub(startToEnd, end, this.position);
+    var startToEndAngle = this.angularVelocity * dt;
+    var len = vec2.length(startToEnd);
+
+    var timeOfImpact = 1;
+
+    var hit;
+    var that = this;
+    this.world.raycastAll(this.position, end, {}, function (result) {
+        if(result.body === that){
+            return;
+        }
+        hit = result.body;
+        vec2.copy(end, result.hitPointWorld);
+        vec2.sub(startToEnd, result.hitPointWorld, that.position);
+        timeOfImpact = vec2.length(startToEnd) / len;
+        result.abort();
+    });
+
+    if(!hit){
+        return false;
+    }
+
+    var rememberAngle = this.angle;
+    vec2.copy(rememberPosition, this.position);
+
+    // Got a start and end point. Approximate time of impact using binary search
+    var iter = 0;
+    var tmin = 0;
+    var tmid = 0;
+    var tmax = timeOfImpact;
+    while (tmax >= tmin && iter < this.ccdIterations) {
+        iter++;
+
+        // calculate the midpoint
+        tmid = (tmax - tmin) / 2;
+
+        // Move the body to that point
+        vec2.scale(integrate_velodt, startToEnd, timeOfImpact);
+        vec2.add(this.position, rememberPosition, integrate_velodt);
+        this.angle = rememberAngle + startToEndAngle * timeOfImpact;
+        this.updateAABB();
+
+        // check overlap
+        var overlaps = this.aabb.overlaps(hit.aabb) && this.world.narrowphase.bodiesOverlap(this, hit);
+
+        if (overlaps) {
+            // change min to search upper interval
+            tmin = tmid;
+        } else {
+            // change max to search lower interval
+            tmax = tmid;
+        }
+    }
+
+    timeOfImpact = tmid;
+
+    vec2.copy(this.position, rememberPosition);
+    this.angle = rememberAngle;
+
+    // move to TOI
+    vec2.scale(integrate_velodt, startToEnd, timeOfImpact);
+    vec2.add(this.position, this.position, integrate_velodt);
+    if(!this.fixedRotation){
+        this.angle += startToEndAngle * timeOfImpact;
+    }
+
+    return true;
+};
+
+/**
+ * @event sleepy
+ */
+Body.sleepyEvent = {
+    type: "sleepy"
+};
+
+/**
+ * @event sleep
+ */
+Body.sleepEvent = {
+    type: "sleep"
+};
+
+/**
+ * @event wakeup
+ */
+Body.wakeUpEvent = {
+    type: "wakeup"
+};
+
+/**
+ * Dynamic body.
+ * @property DYNAMIC
+ * @type {Number}
+ * @static
+ */
+Body.DYNAMIC = 1;
+
+/**
+ * Static body.
+ * @property STATIC
+ * @type {Number}
+ * @static
+ */
+Body.STATIC = 2;
+
+/**
+ * Kinematic body.
+ * @property KINEMATIC
+ * @type {Number}
+ * @static
+ */
+Body.KINEMATIC = 4;
+
+/**
+ * @property AWAKE
+ * @type {Number}
+ * @static
+ */
+Body.AWAKE = 0;
+
+/**
+ * @property SLEEPY
+ * @type {Number}
+ * @static
+ */
+Body.SLEEPY = 1;
+
+/**
+ * @property SLEEPING
+ * @type {Number}
+ * @static
+ */
+Body.SLEEPING = 2;
+
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/objects\\Body.js","/objects")
+},{"../collision/AABB":11,"../events/EventEmitter":31,"../math/vec2":35,"../shapes/Convex":43,"Zbi7gb":4,"buffer":1,"poly-decomp":9}],37:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2');
+var Spring = _dereq_('./Spring');
+var Utils = _dereq_('../utils/Utils');
+
+module.exports = LinearSpring;
+
+/**
+ * A spring, connecting two bodies.
+ *
+ * The Spring explicitly adds force and angularForce to the bodies.
+ *
+ * @class LinearSpring
+ * @extends Spring
+ * @constructor
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Object} [options]
+ * @param {number} [options.restLength]   A number > 0. Default is the current distance between the world anchor points.
+ * @param {number} [options.stiffness=100]  Spring constant (see Hookes Law). A number >= 0.
+ * @param {number} [options.damping=1]      A number >= 0. Default: 1
+ * @param {Array}  [options.worldAnchorA]   Where to hook the spring to body A, in world coordinates. Overrides the option "localAnchorA" if given.
+ * @param {Array}  [options.worldAnchorB]
+ * @param {Array}  [options.localAnchorA]   Where to hook the spring to body A, in local body coordinates. Defaults to the body center.
+ * @param {Array}  [options.localAnchorB]
+ */
+function LinearSpring(bodyA,bodyB,options){
+    options = options || {};
+
+    Spring.call(this, bodyA, bodyB, options);
+
+    /**
+     * Anchor for bodyA in local bodyA coordinates.
+     * @property localAnchorA
+     * @type {Array}
+     */
+    this.localAnchorA = vec2.fromValues(0,0);
+
+    /**
+     * Anchor for bodyB in local bodyB coordinates.
+     * @property localAnchorB
+     * @type {Array}
+     */
+    this.localAnchorB = vec2.fromValues(0,0);
+
+    if(options.localAnchorA){ vec2.copy(this.localAnchorA, options.localAnchorA); }
+    if(options.localAnchorB){ vec2.copy(this.localAnchorB, options.localAnchorB); }
+    if(options.worldAnchorA){ this.setWorldAnchorA(options.worldAnchorA); }
+    if(options.worldAnchorB){ this.setWorldAnchorB(options.worldAnchorB); }
+
+    var worldAnchorA = vec2.create();
+    var worldAnchorB = vec2.create();
+    this.getWorldAnchorA(worldAnchorA);
+    this.getWorldAnchorB(worldAnchorB);
+    var worldDistance = vec2.distance(worldAnchorA, worldAnchorB);
+
+    /**
+     * Rest length of the spring.
+     * @property restLength
+     * @type {number}
+     */
+    this.restLength = typeof(options.restLength) === "number" ? options.restLength : worldDistance;
+}
+LinearSpring.prototype = new Spring();
+LinearSpring.prototype.constructor = LinearSpring;
+
+/**
+ * Set the anchor point on body A, using world coordinates.
+ * @method setWorldAnchorA
+ * @param {Array} worldAnchorA
+ */
+LinearSpring.prototype.setWorldAnchorA = function(worldAnchorA){
+    this.bodyA.toLocalFrame(this.localAnchorA, worldAnchorA);
+};
+
+/**
+ * Set the anchor point on body B, using world coordinates.
+ * @method setWorldAnchorB
+ * @param {Array} worldAnchorB
+ */
+LinearSpring.prototype.setWorldAnchorB = function(worldAnchorB){
+    this.bodyB.toLocalFrame(this.localAnchorB, worldAnchorB);
+};
+
+/**
+ * Get the anchor point on body A, in world coordinates.
+ * @method getWorldAnchorA
+ * @param {Array} result The vector to store the result in.
+ */
+LinearSpring.prototype.getWorldAnchorA = function(result){
+    this.bodyA.toWorldFrame(result, this.localAnchorA);
+};
+
+/**
+ * Get the anchor point on body B, in world coordinates.
+ * @method getWorldAnchorB
+ * @param {Array} result The vector to store the result in.
+ */
+LinearSpring.prototype.getWorldAnchorB = function(result){
+    this.bodyB.toWorldFrame(result, this.localAnchorB);
+};
+
+var applyForce_r =              vec2.create(),
+    applyForce_r_unit =         vec2.create(),
+    applyForce_u =              vec2.create(),
+    applyForce_f =              vec2.create(),
+    applyForce_worldAnchorA =   vec2.create(),
+    applyForce_worldAnchorB =   vec2.create(),
+    applyForce_ri =             vec2.create(),
+    applyForce_rj =             vec2.create(),
+    applyForce_tmp =            vec2.create();
+
+/**
+ * Apply the spring force to the connected bodies.
+ * @method applyForce
+ */
+LinearSpring.prototype.applyForce = function(){
+    var k = this.stiffness,
+        d = this.damping,
+        l = this.restLength,
+        bodyA = this.bodyA,
+        bodyB = this.bodyB,
+        r = applyForce_r,
+        r_unit = applyForce_r_unit,
+        u = applyForce_u,
+        f = applyForce_f,
+        tmp = applyForce_tmp;
+
+    var worldAnchorA = applyForce_worldAnchorA,
+        worldAnchorB = applyForce_worldAnchorB,
+        ri = applyForce_ri,
+        rj = applyForce_rj;
+
+    // Get world anchors
+    this.getWorldAnchorA(worldAnchorA);
+    this.getWorldAnchorB(worldAnchorB);
+
+    // Get offset points
+    vec2.sub(ri, worldAnchorA, bodyA.position);
+    vec2.sub(rj, worldAnchorB, bodyB.position);
+
+    // Compute distance vector between world anchor points
+    vec2.sub(r, worldAnchorB, worldAnchorA);
+    var rlen = vec2.len(r);
+    vec2.normalize(r_unit,r);
+
+    //console.log(rlen)
+    //console.log("A",vec2.str(worldAnchorA),"B",vec2.str(worldAnchorB))
+
+    // Compute relative velocity of the anchor points, u
+    vec2.sub(u, bodyB.velocity, bodyA.velocity);
+    vec2.crossZV(tmp, bodyB.angularVelocity, rj);
+    vec2.add(u, u, tmp);
+    vec2.crossZV(tmp, bodyA.angularVelocity, ri);
+    vec2.sub(u, u, tmp);
+
+    // F = - k * ( x - L ) - D * ( u )
+    vec2.scale(f, r_unit, -k*(rlen-l) - d*vec2.dot(u,r_unit));
+
+    // Add forces to bodies
+    vec2.sub( bodyA.force, bodyA.force, f);
+    vec2.add( bodyB.force, bodyB.force, f);
+
+    // Angular force
+    var ri_x_f = vec2.crossLength(ri, f);
+    var rj_x_f = vec2.crossLength(rj, f);
+    bodyA.angularForce -= ri_x_f;
+    bodyB.angularForce += rj_x_f;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/objects\\LinearSpring.js","/objects")
+},{"../math/vec2":35,"../utils/Utils":54,"./Spring":39,"Zbi7gb":4,"buffer":1}],38:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2');
+var Spring = _dereq_('./Spring');
+
+module.exports = RotationalSpring;
+
+/**
+ * A rotational spring, connecting two bodies rotation. This spring explicitly adds angularForce (torque) to the bodies.
+ *
+ * The spring can be combined with a {{#crossLink "RevoluteConstraint"}}{{/crossLink}} to make, for example, a mouse trap.
+ *
+ * @class RotationalSpring
+ * @extends Spring
+ * @constructor
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Object} [options]
+ * @param {number} [options.restAngle] The relative angle of bodies at which the spring is at rest. If not given, it's set to the current relative angle between the bodies.
+ * @param {number} [options.stiffness=100] Spring constant (see Hookes Law). A number >= 0.
+ * @param {number} [options.damping=1] A number >= 0.
+ */
+function RotationalSpring(bodyA, bodyB, options){
+    options = options || {};
+
+    Spring.call(this, bodyA, bodyB, options);
+
+    /**
+     * Rest angle of the spring.
+     * @property restAngle
+     * @type {number}
+     */
+    this.restAngle = typeof(options.restAngle) === "number" ? options.restAngle : bodyB.angle - bodyA.angle;
+}
+RotationalSpring.prototype = new Spring();
+RotationalSpring.prototype.constructor = RotationalSpring;
+
+/**
+ * Apply the spring force to the connected bodies.
+ * @method applyForce
+ */
+RotationalSpring.prototype.applyForce = function(){
+    var k = this.stiffness,
+        d = this.damping,
+        l = this.restAngle,
+        bodyA = this.bodyA,
+        bodyB = this.bodyB,
+        x = bodyB.angle - bodyA.angle,
+        u = bodyB.angularVelocity - bodyA.angularVelocity;
+
+    var torque = - k * (x - l) - d * u * 0;
+
+    bodyA.angularForce -= torque;
+    bodyB.angularForce += torque;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/objects\\RotationalSpring.js","/objects")
+},{"../math/vec2":35,"./Spring":39,"Zbi7gb":4,"buffer":1}],39:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2');
+var Utils = _dereq_('../utils/Utils');
+
+module.exports = Spring;
+
+/**
+ * A spring, connecting two bodies. The Spring explicitly adds force and angularForce to the bodies and does therefore not put load on the constraint solver.
+ *
+ * @class Spring
+ * @constructor
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ * @param {Object} [options]
+ * @param {number} [options.stiffness=100]  Spring constant (see Hookes Law). A number >= 0.
+ * @param {number} [options.damping=1]      A number >= 0. Default: 1
+ * @param {Array}  [options.localAnchorA]   Where to hook the spring to body A, in local body coordinates. Defaults to the body center.
+ * @param {Array}  [options.localAnchorB]
+ * @param {Array}  [options.worldAnchorA]   Where to hook the spring to body A, in world coordinates. Overrides the option "localAnchorA" if given.
+ * @param {Array}  [options.worldAnchorB]
+ */
+function Spring(bodyA, bodyB, options){
+    options = Utils.defaults(options,{
+        stiffness: 100,
+        damping: 1,
+    });
+
+    /**
+     * Stiffness of the spring.
+     * @property stiffness
+     * @type {number}
+     */
+    this.stiffness = options.stiffness;
+
+    /**
+     * Damping of the spring.
+     * @property damping
+     * @type {number}
+     */
+    this.damping = options.damping;
+
+    /**
+     * First connected body.
+     * @property bodyA
+     * @type {Body}
+     */
+    this.bodyA = bodyA;
+
+    /**
+     * Second connected body.
+     * @property bodyB
+     * @type {Body}
+     */
+    this.bodyB = bodyB;
+}
+
+/**
+ * Apply the spring force to the connected bodies.
+ * @method applyForce
+ */
+Spring.prototype.applyForce = function(){
+    // To be implemented by subclasses
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/objects\\Spring.js","/objects")
+},{"../math/vec2":35,"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],40:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+// Export p2 classes
+module.exports = {
+    AABB :                          _dereq_('./collision/AABB'),
+    AngleLockEquation :             _dereq_('./equations/AngleLockEquation'),
+    Body :                          _dereq_('./objects/Body'),
+    Broadphase :                    _dereq_('./collision/Broadphase'),
+    Capsule :                       _dereq_('./shapes/Capsule'),
+    Circle :                        _dereq_('./shapes/Circle'),
+    Constraint :                    _dereq_('./constraints/Constraint'),
+    ContactEquation :               _dereq_('./equations/ContactEquation'),
+    ContactMaterial :               _dereq_('./material/ContactMaterial'),
+    Convex :                        _dereq_('./shapes/Convex'),
+    DistanceConstraint :            _dereq_('./constraints/DistanceConstraint'),
+    Equation :                      _dereq_('./equations/Equation'),
+    EventEmitter :                  _dereq_('./events/EventEmitter'),
+    FrictionEquation :              _dereq_('./equations/FrictionEquation'),
+    GearConstraint :                _dereq_('./constraints/GearConstraint'),
+    GridBroadphase :                _dereq_('./collision/GridBroadphase'),
+    GSSolver :                      _dereq_('./solver/GSSolver'),
+    Heightfield :                   _dereq_('./shapes/Heightfield'),
+    Line :                          _dereq_('./shapes/Line'),
+    LockConstraint :                _dereq_('./constraints/LockConstraint'),
+    Material :                      _dereq_('./material/Material'),
+    Narrowphase :                   _dereq_('./collision/Narrowphase'),
+    NaiveBroadphase :               _dereq_('./collision/NaiveBroadphase'),
+    Particle :                      _dereq_('./shapes/Particle'),
+    Plane :                         _dereq_('./shapes/Plane'),
+    RevoluteConstraint :            _dereq_('./constraints/RevoluteConstraint'),
+    PrismaticConstraint :           _dereq_('./constraints/PrismaticConstraint'),
+    Ray :                           _dereq_('./collision/Ray'),
+    RaycastResult :                 _dereq_('./collision/RaycastResult'),
+    Rectangle :                     _dereq_('./shapes/Rectangle'),
+    RotationalVelocityEquation :    _dereq_('./equations/RotationalVelocityEquation'),
+    SAPBroadphase :                 _dereq_('./collision/SAPBroadphase'),
+    Shape :                         _dereq_('./shapes/Shape'),
+    Solver :                        _dereq_('./solver/Solver'),
+    Spring :                        _dereq_('./objects/Spring'),
+    LinearSpring :                  _dereq_('./objects/LinearSpring'),
+    RotationalSpring :              _dereq_('./objects/RotationalSpring'),
+    Utils :                         _dereq_('./utils/Utils'),
+    World :                         _dereq_('./world/World'),
+    vec2 :                          _dereq_('./math/vec2'),
+    version :                       _dereq_('../package.json').version,
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/p2.js","/")
+},{"../package.json":10,"./collision/AABB":11,"./collision/Broadphase":12,"./collision/GridBroadphase":13,"./collision/NaiveBroadphase":14,"./collision/Narrowphase":15,"./collision/Ray":16,"./collision/RaycastResult":17,"./collision/SAPBroadphase":18,"./constraints/Constraint":19,"./constraints/DistanceConstraint":20,"./constraints/GearConstraint":21,"./constraints/LockConstraint":22,"./constraints/PrismaticConstraint":23,"./constraints/RevoluteConstraint":24,"./equations/AngleLockEquation":25,"./equations/ContactEquation":26,"./equations/Equation":27,"./equations/FrictionEquation":28,"./equations/RotationalVelocityEquation":30,"./events/EventEmitter":31,"./material/ContactMaterial":32,"./material/Material":33,"./math/vec2":35,"./objects/Body":36,"./objects/LinearSpring":37,"./objects/RotationalSpring":38,"./objects/Spring":39,"./shapes/Capsule":41,"./shapes/Circle":42,"./shapes/Convex":43,"./shapes/Heightfield":44,"./shapes/Line":45,"./shapes/Particle":46,"./shapes/Plane":47,"./shapes/Rectangle":48,"./shapes/Shape":49,"./solver/GSSolver":50,"./solver/Solver":51,"./utils/Utils":54,"./world/World":58,"Zbi7gb":4,"buffer":1}],41:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Shape = _dereq_('./Shape')
+,   vec2 = _dereq_('../math/vec2');
+
+module.exports = Capsule;
+
+/**
+ * Capsule shape class.
+ * @class Capsule
+ * @constructor
+ * @extends Shape
+ * @param {Number} [length=1] The distance between the end points
+ * @param {Number} [radius=1] Radius of the capsule
+ * @example
+ *     var radius = 1;
+ *     var length = 2;
+ *     var capsuleShape = new Capsule(length, radius);
+ *     body.addShape(capsuleShape);
+ */
+function Capsule(length, radius){
+
+    /**
+     * The distance between the end points.
+     * @property {Number} length
+     */
+    this.length = length || 1;
+
+    /**
+     * The radius of the capsule.
+     * @property {Number} radius
+     */
+    this.radius = radius || 1;
+
+    Shape.call(this,Shape.CAPSULE);
+}
+Capsule.prototype = new Shape();
+Capsule.prototype.constructor = Capsule;
+
+/**
+ * Compute the mass moment of inertia of the Capsule.
+ * @method conputeMomentOfInertia
+ * @param  {Number} mass
+ * @return {Number}
+ * @todo
+ */
+Capsule.prototype.computeMomentOfInertia = function(mass){
+    // Approximate with rectangle
+    var r = this.radius,
+        w = this.length + r, // 2*r is too much, 0 is too little
+        h = r*2;
+    return mass * (h*h + w*w) / 12;
+};
+
+/**
+ * @method updateBoundingRadius
+ */
+Capsule.prototype.updateBoundingRadius = function(){
+    this.boundingRadius = this.radius + this.length/2;
+};
+
+/**
+ * @method updateArea
+ */
+Capsule.prototype.updateArea = function(){
+    this.area = Math.PI * this.radius * this.radius + this.radius * 2 * this.length;
+};
+
+var r = vec2.create();
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out      The resulting AABB.
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Capsule.prototype.computeAABB = function(out, position, angle){
+    var radius = this.radius;
+
+    // Compute center position of one of the the circles, world oriented, but with local offset
+    vec2.set(r,this.length / 2,0);
+    if(angle !== 0){
+        vec2.rotate(r,r,angle);
+    }
+
+    // Get bounds
+    vec2.set(out.upperBound,  Math.max(r[0]+radius, -r[0]+radius),
+                              Math.max(r[1]+radius, -r[1]+radius));
+    vec2.set(out.lowerBound,  Math.min(r[0]-radius, -r[0]-radius),
+                              Math.min(r[1]-radius, -r[1]-radius));
+
+    // Add offset
+    vec2.add(out.lowerBound, out.lowerBound, position);
+    vec2.add(out.upperBound, out.upperBound, position);
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Capsule.js","/shapes")
+},{"../math/vec2":35,"./Shape":49,"Zbi7gb":4,"buffer":1}],42:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Shape = _dereq_('./Shape')
+,    vec2 = _dereq_('../math/vec2');
+
+module.exports = Circle;
+
+/**
+ * Circle shape class.
+ * @class Circle
+ * @extends Shape
+ * @constructor
+ * @param {number} [radius=1] The radius of this circle
+ *
+ * @example
+ *     var radius = 1;
+ *     var circleShape = new Circle(radius);
+ *     body.addShape(circleShape);
+ */
+function Circle(radius){
+
+    /**
+     * The radius of the circle.
+     * @property radius
+     * @type {number}
+     */
+    this.radius = radius || 1;
+
+    Shape.call(this,Shape.CIRCLE);
+}
+Circle.prototype = new Shape();
+Circle.prototype.constructor = Circle;
+
+/**
+ * @method computeMomentOfInertia
+ * @param  {Number} mass
+ * @return {Number}
+ */
+Circle.prototype.computeMomentOfInertia = function(mass){
+    var r = this.radius;
+    return mass * r * r / 2;
+};
+
+/**
+ * @method updateBoundingRadius
+ * @return {Number}
+ */
+Circle.prototype.updateBoundingRadius = function(){
+    this.boundingRadius = this.radius;
+};
+
+/**
+ * @method updateArea
+ * @return {Number}
+ */
+Circle.prototype.updateArea = function(){
+    this.area = Math.PI * this.radius * this.radius;
+};
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out      The resulting AABB.
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Circle.prototype.computeAABB = function(out, position, angle){
+    var r = this.radius;
+    vec2.set(out.upperBound,  r,  r);
+    vec2.set(out.lowerBound, -r, -r);
+    if(position){
+        vec2.add(out.lowerBound, out.lowerBound, position);
+        vec2.add(out.upperBound, out.upperBound, position);
+    }
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Circle.js","/shapes")
+},{"../math/vec2":35,"./Shape":49,"Zbi7gb":4,"buffer":1}],43:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Shape = _dereq_('./Shape')
+,   vec2 = _dereq_('../math/vec2')
+,   polyk = _dereq_('../math/polyk')
+,   decomp = _dereq_('poly-decomp');
+
+module.exports = Convex;
+
+/**
+ * Convex shape class.
+ * @class Convex
+ * @constructor
+ * @extends Shape
+ * @param {Array} vertices An array of vertices that span this shape. Vertices are given in counter-clockwise (CCW) direction.
+ * @param {Array} [axes] An array of unit length vectors, representing the symmetry axes in the convex.
+ * @example
+ *     // Create a box
+ *     var vertices = [[-1,-1], [1,-1], [1,1], [-1,1]];
+ *     var convexShape = new Convex(vertices);
+ *     body.addShape(convexShape);
+ */
+function Convex(vertices, axes){
+
+    /**
+     * Vertices defined in the local frame.
+     * @property vertices
+     * @type {Array}
+     */
+    this.vertices = [];
+
+    /**
+     * Axes defined in the local frame.
+     * @property axes
+     * @type {Array}
+     */
+    this.axes = [];
+
+    // Copy the verts
+    for(var i=0; i<vertices.length; i++){
+        var v = vec2.create();
+        vec2.copy(v,vertices[i]);
+        this.vertices.push(v);
+    }
+
+    if(axes){
+        // Copy the axes
+        for(var i=0; i < axes.length; i++){
+            var axis = vec2.create();
+            vec2.copy(axis, axes[i]);
+            this.axes.push(axis);
+        }
+    } else {
+        // Construct axes from the vertex data
+        for(var i = 0; i < vertices.length; i++){
+            // Get the world edge
+            var worldPoint0 = vertices[i];
+            var worldPoint1 = vertices[(i+1) % vertices.length];
+
+            var normal = vec2.create();
+            vec2.sub(normal, worldPoint1, worldPoint0);
+
+            // Get normal - just rotate 90 degrees since vertices are given in CCW
+            vec2.rotate90cw(normal, normal);
+            vec2.normalize(normal, normal);
+
+            this.axes.push(normal);
+        }
+    }
+
+    /**
+     * The center of mass of the Convex
+     * @property centerOfMass
+     * @type {Array}
+     */
+    this.centerOfMass = vec2.fromValues(0,0);
+
+    /**
+     * Triangulated version of this convex. The structure is Array of 3-Arrays, and each subarray contains 3 integers, referencing the vertices.
+     * @property triangles
+     * @type {Array}
+     */
+    this.triangles = [];
+
+    if(this.vertices.length){
+        this.updateTriangles();
+        this.updateCenterOfMass();
+    }
+
+    /**
+     * The bounding radius of the convex
+     * @property boundingRadius
+     * @type {Number}
+     */
+    this.boundingRadius = 0;
+
+    Shape.call(this, Shape.CONVEX);
+
+    this.updateBoundingRadius();
+    this.updateArea();
+    if(this.area < 0){
+        throw new Error("Convex vertices must be given in conter-clockwise winding.");
+    }
+}
+Convex.prototype = new Shape();
+Convex.prototype.constructor = Convex;
+
+var tmpVec1 = vec2.create();
+var tmpVec2 = vec2.create();
+
+/**
+ * Project a Convex onto a world-oriented axis
+ * @method projectOntoAxis
+ * @static
+ * @param  {Array} offset
+ * @param  {Array} localAxis
+ * @param  {Array} result
+ */
+Convex.prototype.projectOntoLocalAxis = function(localAxis, result){
+    var max=null,
+        min=null,
+        v,
+        value,
+        localAxis = tmpVec1;
+
+    // Get projected position of all vertices
+    for(var i=0; i<this.vertices.length; i++){
+        v = this.vertices[i];
+        value = vec2.dot(v, localAxis);
+        if(max === null || value > max){
+            max = value;
+        }
+        if(min === null || value < min){
+            min = value;
+        }
+    }
+
+    if(min > max){
+        var t = min;
+        min = max;
+        max = t;
+    }
+
+    vec2.set(result, min, max);
+};
+
+Convex.prototype.projectOntoWorldAxis = function(localAxis, shapeOffset, shapeAngle, result){
+    var worldAxis = tmpVec2;
+
+    this.projectOntoLocalAxis(localAxis, result);
+
+    // Project the position of the body onto the axis - need to add this to the result
+    if(shapeAngle !== 0){
+        vec2.rotate(worldAxis, localAxis, shapeAngle);
+    } else {
+        worldAxis = localAxis;
+    }
+    var offset = vec2.dot(shapeOffset, worldAxis);
+
+    vec2.set(result, result[0] + offset, result[1] + offset);
+};
+
+
+/**
+ * Update the .triangles property
+ * @method updateTriangles
+ */
+Convex.prototype.updateTriangles = function(){
+
+    this.triangles.length = 0;
+
+    // Rewrite on polyk notation, array of numbers
+    var polykVerts = [];
+    for(var i=0; i<this.vertices.length; i++){
+        var v = this.vertices[i];
+        polykVerts.push(v[0],v[1]);
+    }
+
+    // Triangulate
+    var triangles = polyk.Triangulate(polykVerts);
+
+    // Loop over all triangles, add their inertia contributions to I
+    for(var i=0; i<triangles.length; i+=3){
+        var id1 = triangles[i],
+            id2 = triangles[i+1],
+            id3 = triangles[i+2];
+
+        // Add to triangles
+        this.triangles.push([id1,id2,id3]);
+    }
+};
+
+var updateCenterOfMass_centroid = vec2.create(),
+    updateCenterOfMass_centroid_times_mass = vec2.create(),
+    updateCenterOfMass_a = vec2.create(),
+    updateCenterOfMass_b = vec2.create(),
+    updateCenterOfMass_c = vec2.create(),
+    updateCenterOfMass_ac = vec2.create(),
+    updateCenterOfMass_ca = vec2.create(),
+    updateCenterOfMass_cb = vec2.create(),
+    updateCenterOfMass_n = vec2.create();
+
+/**
+ * Update the .centerOfMass property.
+ * @method updateCenterOfMass
+ */
+Convex.prototype.updateCenterOfMass = function(){
+    var triangles = this.triangles,
+        verts = this.vertices,
+        cm = this.centerOfMass,
+        centroid = updateCenterOfMass_centroid,
+        n = updateCenterOfMass_n,
+        a = updateCenterOfMass_a,
+        b = updateCenterOfMass_b,
+        c = updateCenterOfMass_c,
+        ac = updateCenterOfMass_ac,
+        ca = updateCenterOfMass_ca,
+        cb = updateCenterOfMass_cb,
+        centroid_times_mass = updateCenterOfMass_centroid_times_mass;
+
+    vec2.set(cm,0,0);
+    var totalArea = 0;
+
+    for(var i=0; i!==triangles.length; i++){
+        var t = triangles[i],
+            a = verts[t[0]],
+            b = verts[t[1]],
+            c = verts[t[2]];
+
+        vec2.centroid(centroid,a,b,c);
+
+        // Get mass for the triangle (density=1 in this case)
+        // http://math.stackexchange.com/questions/80198/area-of-triangle-via-vectors
+        var m = Convex.triangleArea(a,b,c);
+        totalArea += m;
+
+        // Add to center of mass
+        vec2.scale(centroid_times_mass, centroid, m);
+        vec2.add(cm, cm, centroid_times_mass);
+    }
+
+    vec2.scale(cm,cm,1/totalArea);
+};
+
+/**
+ * Compute the mass moment of inertia of the Convex.
+ * @method computeMomentOfInertia
+ * @param  {Number} mass
+ * @return {Number}
+ * @see http://www.gamedev.net/topic/342822-moment-of-inertia-of-a-polygon-2d/
+ */
+Convex.prototype.computeMomentOfInertia = function(mass){
+    var denom = 0.0,
+        numer = 0.0,
+        N = this.vertices.length;
+    for(var j = N-1, i = 0; i < N; j = i, i ++){
+        var p0 = this.vertices[j];
+        var p1 = this.vertices[i];
+        var a = Math.abs(vec2.crossLength(p0,p1));
+        var b = vec2.dot(p1,p1) + vec2.dot(p1,p0) + vec2.dot(p0,p0);
+        denom += a * b;
+        numer += a;
+    }
+    return (mass / 6.0) * (denom / numer);
+};
+
+/**
+ * Updates the .boundingRadius property
+ * @method updateBoundingRadius
+ */
+Convex.prototype.updateBoundingRadius = function(){
+    var verts = this.vertices,
+        r2 = 0;
+
+    for(var i=0; i!==verts.length; i++){
+        var l2 = vec2.squaredLength(verts[i]);
+        if(l2 > r2){
+            r2 = l2;
+        }
+    }
+
+    this.boundingRadius = Math.sqrt(r2);
+};
+
+/**
+ * Get the area of the triangle spanned by the three points a, b, c. The area is positive if the points are given in counter-clockwise order, otherwise negative.
+ * @static
+ * @method triangleArea
+ * @param {Array} a
+ * @param {Array} b
+ * @param {Array} c
+ * @return {Number}
+ */
+Convex.triangleArea = function(a,b,c){
+    return (((b[0] - a[0])*(c[1] - a[1]))-((c[0] - a[0])*(b[1] - a[1]))) * 0.5;
+};
+
+/**
+ * Update the .area
+ * @method updateArea
+ */
+Convex.prototype.updateArea = function(){
+    this.updateTriangles();
+    this.area = 0;
+
+    var triangles = this.triangles,
+        verts = this.vertices;
+    for(var i=0; i!==triangles.length; i++){
+        var t = triangles[i],
+            a = verts[t[0]],
+            b = verts[t[1]],
+            c = verts[t[2]];
+
+        // Get mass for the triangle (density=1 in this case)
+        var m = Convex.triangleArea(a,b,c);
+        this.area += m;
+    }
+};
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Convex.prototype.computeAABB = function(out, position, angle){
+    out.setFromPoints(this.vertices, position, angle, 0);
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Convex.js","/shapes")
+},{"../math/polyk":34,"../math/vec2":35,"./Shape":49,"Zbi7gb":4,"buffer":1,"poly-decomp":9}],44:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Shape = _dereq_('./Shape')
+,    vec2 = _dereq_('../math/vec2')
+,    Utils = _dereq_('../utils/Utils');
+
+module.exports = Heightfield;
+
+/**
+ * Heightfield shape class. Height data is given as an array. These data points are spread out evenly with a distance "elementWidth".
+ * @class Heightfield
+ * @extends Shape
+ * @constructor
+ * @param {Array} data An array of Y values that will be used to construct the terrain.
+ * @param {object} options
+ * @param {Number} [options.minValue] Minimum value of the data points in the data array. Will be computed automatically if not given.
+ * @param {Number} [options.maxValue] Maximum value.
+ * @param {Number} [options.elementWidth=0.1] World spacing between the data points in X direction.
+ * @todo Should be possible to use along all axes, not just y
+ *
+ * @example
+ *     // Generate some height data (y-values).
+ *     var data = [];
+ *     for(var i = 0; i < 1000; i++){
+ *         var y = 0.5 * Math.cos(0.2 * i);
+ *         data.push(y);
+ *     }
+ *
+ *     // Create the heightfield shape
+ *     var heightfieldShape = new Heightfield(data, {
+ *         elementWidth: 1 // Distance between the data points in X direction
+ *     });
+ *     var heightfieldBody = new Body();
+ *     heightfieldBody.addShape(heightfieldShape);
+ *     world.addBody(heightfieldBody);
+ */
+function Heightfield(data, options){
+    options = Utils.defaults(options, {
+        maxValue : null,
+        minValue : null,
+        elementWidth : 0.1
+    });
+
+    if(options.minValue === null || options.maxValue === null){
+        options.maxValue = data[0];
+        options.minValue = data[0];
+        for(var i=0; i !== data.length; i++){
+            var v = data[i];
+            if(v > options.maxValue){
+                options.maxValue = v;
+            }
+            if(v < options.minValue){
+                options.minValue = v;
+            }
+        }
+    }
+
+    /**
+     * An array of numbers, or height values, that are spread out along the x axis.
+     * @property {array} data
+     */
+    this.data = data;
+
+    /**
+     * Max value of the data
+     * @property {number} maxValue
+     */
+    this.maxValue = options.maxValue;
+
+    /**
+     * Max value of the data
+     * @property {number} minValue
+     */
+    this.minValue = options.minValue;
+
+    /**
+     * The width of each element
+     * @property {number} elementWidth
+     */
+    this.elementWidth = options.elementWidth;
+
+    Shape.call(this,Shape.HEIGHTFIELD);
+}
+Heightfield.prototype = new Shape();
+Heightfield.prototype.constructor = Heightfield;
+
+/**
+ * @method computeMomentOfInertia
+ * @param  {Number} mass
+ * @return {Number}
+ */
+Heightfield.prototype.computeMomentOfInertia = function(mass){
+    return Number.MAX_VALUE;
+};
+
+Heightfield.prototype.updateBoundingRadius = function(){
+    this.boundingRadius = Number.MAX_VALUE;
+};
+
+Heightfield.prototype.updateArea = function(){
+    var data = this.data,
+        area = 0;
+    for(var i=0; i<data.length-1; i++){
+        area += (data[i]+data[i+1]) / 2 * this.elementWidth;
+    }
+    this.area = area;
+};
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out      The resulting AABB.
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Heightfield.prototype.computeAABB = function(out, position, angle){
+    // Use the max data rectangle
+    out.upperBound[0] = this.elementWidth * this.data.length + position[0];
+    out.upperBound[1] = this.maxValue + position[1];
+    out.lowerBound[0] = position[0];
+    out.lowerBound[1] = -Number.MAX_VALUE; // Infinity
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Heightfield.js","/shapes")
+},{"../math/vec2":35,"../utils/Utils":54,"./Shape":49,"Zbi7gb":4,"buffer":1}],45:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Shape = _dereq_('./Shape')
+,   vec2 = _dereq_('../math/vec2');
+
+module.exports = Line;
+
+/**
+ * Line shape class. The line shape is along the x direction, and stretches from [-length/2, 0] to [length/2,0].
+ * @class Line
+ * @param {Number} [length=1] The total length of the line
+ * @extends Shape
+ * @constructor
+ */
+function Line(length){
+
+    /**
+     * Length of this line
+     * @property length
+     * @type {Number}
+     */
+    this.length = length || 1;
+
+    Shape.call(this,Shape.LINE);
+}
+Line.prototype = new Shape();
+Line.prototype.constructor = Line;
+
+Line.prototype.computeMomentOfInertia = function(mass){
+    return mass * Math.pow(this.length,2) / 12;
+};
+
+Line.prototype.updateBoundingRadius = function(){
+    this.boundingRadius = this.length/2;
+};
+
+var points = [vec2.create(),vec2.create()];
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out      The resulting AABB.
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Line.prototype.computeAABB = function(out, position, angle){
+    var l2 = this.length / 2;
+    vec2.set(points[0], -l2,  0);
+    vec2.set(points[1],  l2,  0);
+    out.setFromPoints(points,position,angle,0);
+};
+
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Line.js","/shapes")
+},{"../math/vec2":35,"./Shape":49,"Zbi7gb":4,"buffer":1}],46:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Shape = _dereq_('./Shape')
+,   vec2 = _dereq_('../math/vec2');
+
+module.exports = Particle;
+
+/**
+ * Particle shape class.
+ * @class Particle
+ * @constructor
+ * @extends Shape
+ */
+function Particle(){
+    Shape.call(this,Shape.PARTICLE);
+}
+Particle.prototype = new Shape();
+Particle.prototype.constructor = Particle;
+
+Particle.prototype.computeMomentOfInertia = function(mass){
+    return 0; // Can't rotate a particle
+};
+
+Particle.prototype.updateBoundingRadius = function(){
+    this.boundingRadius = 0;
+};
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Particle.prototype.computeAABB = function(out, position, angle){
+    vec2.copy(out.lowerBound, position);
+    vec2.copy(out.upperBound, position);
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Particle.js","/shapes")
+},{"../math/vec2":35,"./Shape":49,"Zbi7gb":4,"buffer":1}],47:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Shape =  _dereq_('./Shape')
+,    vec2 =  _dereq_('../math/vec2')
+,    Utils = _dereq_('../utils/Utils');
+
+module.exports = Plane;
+
+/**
+ * Plane shape class. The plane is facing in the Y direction.
+ * @class Plane
+ * @extends Shape
+ * @constructor
+ */
+function Plane(){
+    Shape.call(this,Shape.PLANE);
+}
+Plane.prototype = new Shape();
+Plane.prototype.constructor = Plane;
+
+/**
+ * Compute moment of inertia
+ * @method computeMomentOfInertia
+ */
+Plane.prototype.computeMomentOfInertia = function(mass){
+    return 0; // Plane is infinite. The inertia should therefore be infinty but by convention we set 0 here
+};
+
+/**
+ * Update the bounding radius
+ * @method updateBoundingRadius
+ */
+Plane.prototype.updateBoundingRadius = function(){
+    this.boundingRadius = Number.MAX_VALUE;
+};
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Plane.prototype.computeAABB = function(out, position, angle){
+    var a = 0,
+        set = vec2.set;
+    if(typeof(angle) === "number"){
+        a = angle % (2*Math.PI);
+    }
+
+    if(a === 0){
+        // y goes from -inf to 0
+        set(out.lowerBound, -Number.MAX_VALUE, -Number.MAX_VALUE);
+        set(out.upperBound,  Number.MAX_VALUE,  0);
+    } else if(a === Math.PI / 2){
+        // x goes from 0 to inf
+        set(out.lowerBound, 0, -Number.MAX_VALUE);
+        set(out.upperBound,      Number.MAX_VALUE,  Number.MAX_VALUE);
+    } else if(a === Math.PI){
+        // y goes from 0 to inf
+        set(out.lowerBound, -Number.MAX_VALUE, 0);
+        set(out.upperBound,  Number.MAX_VALUE, Number.MAX_VALUE);
+    } else if(a === 3*Math.PI/2){
+        // x goes from -inf to 0
+        set(out.lowerBound, -Number.MAX_VALUE,     -Number.MAX_VALUE);
+        set(out.upperBound,  0,  Number.MAX_VALUE);
+    } else {
+        // Set max bounds
+        set(out.lowerBound, -Number.MAX_VALUE, -Number.MAX_VALUE);
+        set(out.upperBound,  Number.MAX_VALUE,  Number.MAX_VALUE);
+    }
+
+    vec2.add(out.lowerBound, out.lowerBound, position);
+    vec2.add(out.upperBound, out.upperBound, position);
+};
+
+Plane.prototype.updateArea = function(){
+    this.area = Number.MAX_VALUE;
+};
+
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Plane.js","/shapes")
+},{"../math/vec2":35,"../utils/Utils":54,"./Shape":49,"Zbi7gb":4,"buffer":1}],48:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2')
+,   Shape = _dereq_('./Shape')
+,   Convex = _dereq_('./Convex');
+
+module.exports = Rectangle;
+
+/**
+ * Rectangle shape class.
+ * @class Rectangle
+ * @constructor
+ * @param {Number} [width=1] Width
+ * @param {Number} [height=1] Height
+ * @extends Convex
+ */
+function Rectangle(width, height){
+
+    /**
+     * Total width of the rectangle
+     * @property width
+     * @type {Number}
+     */
+    this.width = width || 1;
+
+    /**
+     * Total height of the rectangle
+     * @property height
+     * @type {Number}
+     */
+    this.height = height || 1;
+
+    var verts = [   vec2.fromValues(-width/2, -height/2),
+                    vec2.fromValues( width/2, -height/2),
+                    vec2.fromValues( width/2,  height/2),
+                    vec2.fromValues(-width/2,  height/2)];
+    var axes = [vec2.fromValues(1, 0), vec2.fromValues(0, 1)];
+
+    Convex.call(this, verts, axes);
+
+    this.type = Shape.RECTANGLE;
+}
+Rectangle.prototype = new Convex([]);
+Rectangle.prototype.constructor = Rectangle;
+
+/**
+ * Compute moment of inertia
+ * @method computeMomentOfInertia
+ * @param  {Number} mass
+ * @return {Number}
+ */
+Rectangle.prototype.computeMomentOfInertia = function(mass){
+    var w = this.width,
+        h = this.height;
+    return mass * (h*h + w*w) / 12;
+};
+
+/**
+ * Update the bounding radius
+ * @method updateBoundingRadius
+ */
+Rectangle.prototype.updateBoundingRadius = function(){
+    var w = this.width,
+        h = this.height;
+    this.boundingRadius = Math.sqrt(w*w + h*h) / 2;
+};
+
+var corner1 = vec2.create(),
+    corner2 = vec2.create(),
+    corner3 = vec2.create(),
+    corner4 = vec2.create();
+
+/**
+ * @method computeAABB
+ * @param  {AABB}   out      The resulting AABB.
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Rectangle.prototype.computeAABB = function(out, position, angle){
+    out.setFromPoints(this.vertices,position,angle,0);
+};
+
+Rectangle.prototype.updateArea = function(){
+    this.area = this.width * this.height;
+};
+
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Rectangle.js","/shapes")
+},{"../math/vec2":35,"./Convex":43,"./Shape":49,"Zbi7gb":4,"buffer":1}],49:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = Shape;
+
+/**
+ * Base class for shapes.
+ * @class Shape
+ * @constructor
+ * @param {Number} type
+ */
+function Shape(type){
+
+    /**
+     * The type of the shape. One of:
+     *
+     * * {{#crossLink "Shape/CIRCLE:property"}}Shape.CIRCLE{{/crossLink}}
+     * * {{#crossLink "Shape/PARTICLE:property"}}Shape.PARTICLE{{/crossLink}}
+     * * {{#crossLink "Shape/PLANE:property"}}Shape.PLANE{{/crossLink}}
+     * * {{#crossLink "Shape/CONVEX:property"}}Shape.CONVEX{{/crossLink}}
+     * * {{#crossLink "Shape/LINE:property"}}Shape.LINE{{/crossLink}}
+     * * {{#crossLink "Shape/RECTANGLE:property"}}Shape.RECTANGLE{{/crossLink}}
+     * * {{#crossLink "Shape/CAPSULE:property"}}Shape.CAPSULE{{/crossLink}}
+     * * {{#crossLink "Shape/HEIGHTFIELD:property"}}Shape.HEIGHTFIELD{{/crossLink}}
+     *
+     * @property {number} type
+     */
+    this.type = type;
+
+    /**
+     * Shape object identifier.
+     * @type {Number}
+     * @property id
+     */
+    this.id = Shape.idCounter++;
+
+    /**
+     * Bounding circle radius of this shape
+     * @property boundingRadius
+     * @type {Number}
+     */
+    this.boundingRadius = 0;
+
+    /**
+     * Collision group that this shape belongs to (bit mask). See <a href="http://www.aurelienribon.com/blog/2011/07/box2d-tutorial-collision-filtering/">this tutorial</a>.
+     * @property collisionGroup
+     * @type {Number}
+     * @example
+     *     // Setup bits for each available group
+     *     var PLAYER = Math.pow(2,0),
+     *         ENEMY =  Math.pow(2,1),
+     *         GROUND = Math.pow(2,2)
+     *
+     *     // Put shapes into their groups
+     *     player1Shape.collisionGroup = PLAYER;
+     *     player2Shape.collisionGroup = PLAYER;
+     *     enemyShape  .collisionGroup = ENEMY;
+     *     groundShape .collisionGroup = GROUND;
+     *
+     *     // Assign groups that each shape collide with.
+     *     // Note that the players can collide with ground and enemies, but not with other players.
+     *     player1Shape.collisionMask = ENEMY | GROUND;
+     *     player2Shape.collisionMask = ENEMY | GROUND;
+     *     enemyShape  .collisionMask = PLAYER | GROUND;
+     *     groundShape .collisionMask = PLAYER | ENEMY;
+     *
+     * @example
+     *     // How collision check is done
+     *     if(shapeA.collisionGroup & shapeB.collisionMask)!=0 && (shapeB.collisionGroup & shapeA.collisionMask)!=0){
+     *         // The shapes will collide
+     *     }
+     */
+    this.collisionGroup = 1;
+
+    /**
+     * Whether to produce contact forces when in contact with other bodies. Note that contacts will be generated, but they will be disabled. That means that this shape will move through other body shapes, but it will still trigger contact events, etc.
+     * @property {Boolean} collisionResponse
+     */
+    this.collisionResponse = true;
+
+    /**
+     * Collision mask of this shape. See .collisionGroup.
+     * @property collisionMask
+     * @type {Number}
+     */
+    this.collisionMask =  1;
+    if(type){
+        this.updateBoundingRadius();
+    }
+
+    /**
+     * Material to use in collisions for this Shape. If this is set to null, the world will use default material properties instead.
+     * @property material
+     * @type {Material}
+     */
+    this.material = null;
+
+    /**
+     * Area of this shape.
+     * @property area
+     * @type {Number}
+     */
+    this.area = 0;
+
+    /**
+     * Set to true if you want this shape to be a sensor. A sensor does not generate contacts, but it still reports contact events. This is good if you want to know if a shape is overlapping another shape, without them generating contacts.
+     * @property {Boolean} sensor
+     */
+    this.sensor = false;
+
+    this.updateArea();
+}
+
+Shape.idCounter = 0;
+
+/**
+ * @static
+ * @property {Number} CIRCLE
+ */
+Shape.CIRCLE =      1;
+
+/**
+ * @static
+ * @property {Number} PARTICLE
+ */
+Shape.PARTICLE =    2;
+
+/**
+ * @static
+ * @property {Number} PLANE
+ */
+Shape.PLANE =       4;
+
+/**
+ * @static
+ * @property {Number} CONVEX
+ */
+Shape.CONVEX =      8;
+
+/**
+ * @static
+ * @property {Number} LINE
+ */
+Shape.LINE =        16;
+
+/**
+ * @static
+ * @property {Number} RECTANGLE
+ */
+Shape.RECTANGLE =   32;
+
+/**
+ * @static
+ * @property {Number} CAPSULE
+ */
+Shape.CAPSULE =     64;
+
+/**
+ * @static
+ * @property {Number} HEIGHTFIELD
+ */
+Shape.HEIGHTFIELD = 128;
+
+/**
+ * Should return the moment of inertia around the Z axis of the body given the total mass. See <a href="http://en.wikipedia.org/wiki/List_of_moments_of_inertia">Wikipedia's list of moments of inertia</a>.
+ * @method computeMomentOfInertia
+ * @param  {Number} mass
+ * @return {Number} If the inertia is infinity or if the object simply isn't possible to rotate, return 0.
+ */
+Shape.prototype.computeMomentOfInertia = function(mass){
+    throw new Error("Shape.computeMomentOfInertia is not implemented in this Shape...");
+};
+
+/**
+ * Returns the bounding circle radius of this shape.
+ * @method updateBoundingRadius
+ * @return {Number}
+ */
+Shape.prototype.updateBoundingRadius = function(){
+    throw new Error("Shape.updateBoundingRadius is not implemented in this Shape...");
+};
+
+/**
+ * Update the .area property of the shape.
+ * @method updateArea
+ */
+Shape.prototype.updateArea = function(){
+    // To be implemented in all subclasses
+};
+
+/**
+ * Compute the world axis-aligned bounding box (AABB) of this shape.
+ * @method computeAABB
+ * @param  {AABB}   out      The resulting AABB.
+ * @param  {Array}  position
+ * @param  {Number} angle
+ */
+Shape.prototype.computeAABB = function(out, position, angle){
+    // To be implemented in each subclass
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/shapes\\Shape.js","/shapes")
+},{"Zbi7gb":4,"buffer":1}],50:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2')
+,   Solver = _dereq_('./Solver')
+,   Utils = _dereq_('../utils/Utils')
+,   FrictionEquation = _dereq_('../equations/FrictionEquation');
+
+module.exports = GSSolver;
+
+/**
+ * Iterative Gauss-Seidel constraint equation solver.
+ *
+ * @class GSSolver
+ * @constructor
+ * @extends Solver
+ * @param {Object} [options]
+ * @param {Number} [options.iterations=10]
+ * @param {Number} [options.tolerance=0]
+ */
+function GSSolver(options){
+    Solver.call(this,options,Solver.GS);
+    options = options || {};
+
+    /**
+     * The number of iterations to do when solving. More gives better results, but is more expensive.
+     * @property iterations
+     * @type {Number}
+     */
+    this.iterations = options.iterations || 10;
+
+    /**
+     * The error tolerance, per constraint. If the total error is below this limit, the solver will stop iterating. Set to zero for as good solution as possible, but to something larger than zero to make computations faster.
+     * @property tolerance
+     * @type {Number}
+     */
+    this.tolerance = options.tolerance || 1e-10;
+
+    this.arrayStep = 30;
+    this.lambda = new Utils.ARRAY_TYPE(this.arrayStep);
+    this.Bs =     new Utils.ARRAY_TYPE(this.arrayStep);
+    this.invCs =  new Utils.ARRAY_TYPE(this.arrayStep);
+
+    /**
+     * Set to true to set all right hand side terms to zero when solving. Can be handy for a few applications.
+     * @property useZeroRHS
+     * @type {Boolean}
+     */
+    this.useZeroRHS = false;
+
+    /**
+     * Number of solver iterations that are done to approximate normal forces. When these iterations are done, friction force will be computed from the contact normal forces. These friction forces will override any other friction forces set from the World for example.
+     * The solver will use less iterations if the solution is below the .tolerance.
+     * @property frictionIterations
+     * @type {Number}
+     */
+    this.frictionIterations = 0;
+
+    /**
+     * The number of iterations that were made during the last solve. If .tolerance is zero, this value will always be equal to .iterations, but if .tolerance is larger than zero, and the solver can quit early, then this number will be somewhere between 1 and .iterations.
+     * @property {Number} usedIterations
+     */
+    this.usedIterations = 0;
+}
+GSSolver.prototype = new Solver();
+GSSolver.prototype.constructor = GSSolver;
+
+function setArrayZero(array){
+    var l = array.length;
+    while(l--){
+        array[l] = +0.0;
+    }
+}
+
+/**
+ * Solve the system of equations
+ * @method solve
+ * @param  {Number}  h       Time step
+ * @param  {World}   world    World to solve
+ */
+GSSolver.prototype.solve = function(h, world){
+
+    this.sortEquations();
+
+    var iter = 0,
+        maxIter = this.iterations,
+        maxFrictionIter = this.frictionIterations,
+        equations = this.equations,
+        Neq = equations.length,
+        tolSquared = Math.pow(this.tolerance*Neq, 2),
+        bodies = world.bodies,
+        Nbodies = world.bodies.length,
+        add = vec2.add,
+        set = vec2.set,
+        useZeroRHS = this.useZeroRHS,
+        lambda = this.lambda;
+
+    this.usedIterations = 0;
+
+    if(Neq){
+        for(var i=0; i!==Nbodies; i++){
+            var b = bodies[i];
+
+            // Update solve mass
+            b.updateSolveMassProperties();
+        }
+    }
+
+    // Things that does not change during iteration can be computed once
+    if(lambda.length < Neq){
+        lambda = this.lambda =  new Utils.ARRAY_TYPE(Neq + this.arrayStep);
+        this.Bs =               new Utils.ARRAY_TYPE(Neq + this.arrayStep);
+        this.invCs =            new Utils.ARRAY_TYPE(Neq + this.arrayStep);
+    }
+    setArrayZero(lambda);
+    var invCs = this.invCs,
+        Bs = this.Bs,
+        lambda = this.lambda;
+
+    for(var i=0; i!==equations.length; i++){
+        var c = equations[i];
+        if(c.timeStep !== h || c.needsUpdate){
+            c.timeStep = h;
+            c.update();
+        }
+        Bs[i] =     c.computeB(c.a,c.b,h);
+        invCs[i] =  c.computeInvC(c.epsilon);
+    }
+
+    var q, B, c, deltalambdaTot,i,j;
+
+    if(Neq !== 0){
+
+        for(i=0; i!==Nbodies; i++){
+            var b = bodies[i];
+
+            // Reset vlambda
+            b.resetConstraintVelocity();
+        }
+
+        if(maxFrictionIter){
+            // Iterate over contact equations to get normal forces
+            for(iter=0; iter!==maxFrictionIter; iter++){
+
+                // Accumulate the total error for each iteration.
+                deltalambdaTot = 0.0;
+
+                for(j=0; j!==Neq; j++){
+                    c = equations[j];
+
+                    var deltalambda = GSSolver.iterateEquation(j,c,c.epsilon,Bs,invCs,lambda,useZeroRHS,h,iter);
+                    deltalambdaTot += Math.abs(deltalambda);
+                }
+
+                this.usedIterations++;
+
+                // If the total error is small enough - stop iterate
+                if(deltalambdaTot*deltalambdaTot <= tolSquared){
+                    break;
+                }
+            }
+
+            GSSolver.updateMultipliers(equations, lambda, 1/h);
+
+            // Set computed friction force
+            for(j=0; j!==Neq; j++){
+                var eq = equations[j];
+                if(eq instanceof FrictionEquation){
+                    var f = 0.0;
+                    for(var k=0; k!==eq.contactEquations.length; k++){
+                        f += eq.contactEquations[k].multiplier;
+                    }
+                    f *= eq.frictionCoefficient / eq.contactEquations.length;
+                    eq.maxForce =  f;
+                    eq.minForce = -f;
+                }
+            }
+        }
+
+        // Iterate over all equations
+        for(iter=0; iter!==maxIter; iter++){
+
+            // Accumulate the total error for each iteration.
+            deltalambdaTot = 0.0;
+
+            for(j=0; j!==Neq; j++){
+                c = equations[j];
+
+                var deltalambda = GSSolver.iterateEquation(j,c,c.epsilon,Bs,invCs,lambda,useZeroRHS,h,iter);
+                deltalambdaTot += Math.abs(deltalambda);
+            }
+
+            this.usedIterations++;
+
+            // If the total error is small enough - stop iterate
+            if(deltalambdaTot*deltalambdaTot <= tolSquared){
+                break;
+            }
+        }
+
+        // Add result to velocity
+        for(i=0; i!==Nbodies; i++){
+            bodies[i].addConstraintVelocity();
+        }
+
+        GSSolver.updateMultipliers(equations, lambda, 1/h);
+    }
+};
+
+// Sets the .multiplier property of each equation
+GSSolver.updateMultipliers = function(equations, lambda, invDt){
+    // Set the .multiplier property of each equation
+    var l = equations.length;
+    while(l--){
+        equations[l].multiplier = lambda[l] * invDt;
+    }
+};
+
+GSSolver.iterateEquation = function(j,eq,eps,Bs,invCs,lambda,useZeroRHS,dt,iter){
+    // Compute iteration
+    var B = Bs[j],
+        invC = invCs[j],
+        lambdaj = lambda[j],
+        GWlambda = eq.computeGWlambda();
+
+    var maxForce = eq.maxForce,
+        minForce = eq.minForce;
+
+    if(useZeroRHS){
+        B = 0;
+    }
+
+    var deltalambda = invC * ( B - GWlambda - eps * lambdaj );
+
+    // Clamp if we are not within the min/max interval
+    var lambdaj_plus_deltalambda = lambdaj + deltalambda;
+    if(lambdaj_plus_deltalambda < minForce*dt){
+        deltalambda = minForce*dt - lambdaj;
+    } else if(lambdaj_plus_deltalambda > maxForce*dt){
+        deltalambda = maxForce*dt - lambdaj;
+    }
+    lambda[j] += deltalambda;
+    eq.addToWlambda(deltalambda);
+
+    return deltalambda;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/solver\\GSSolver.js","/solver")
+},{"../equations/FrictionEquation":28,"../math/vec2":35,"../utils/Utils":54,"./Solver":51,"Zbi7gb":4,"buffer":1}],51:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Utils = _dereq_('../utils/Utils')
+,   EventEmitter = _dereq_('../events/EventEmitter');
+
+module.exports = Solver;
+
+/**
+ * Base class for constraint solvers.
+ * @class Solver
+ * @constructor
+ * @extends EventEmitter
+ */
+function Solver(options,type){
+    options = options || {};
+
+    EventEmitter.call(this);
+
+    this.type = type;
+
+    /**
+     * Current equations in the solver.
+     *
+     * @property equations
+     * @type {Array}
+     */
+    this.equations = [];
+
+    /**
+     * Function that is used to sort all equations before each solve.
+     * @property equationSortFunction
+     * @type {function|boolean}
+     */
+    this.equationSortFunction = options.equationSortFunction || false;
+}
+Solver.prototype = new EventEmitter();
+Solver.prototype.constructor = Solver;
+
+/**
+ * Method to be implemented in each subclass
+ * @method solve
+ * @param  {Number} dt
+ * @param  {World} world
+ */
+Solver.prototype.solve = function(dt,world){
+    throw new Error("Solver.solve should be implemented by subclasses!");
+};
+
+var mockWorld = {bodies:[]};
+
+/**
+ * Solves all constraints in an island.
+ * @method solveIsland
+ * @param  {Number} dt
+ * @param  {Island} island
+ */
+Solver.prototype.solveIsland = function(dt,island){
+
+    this.removeAllEquations();
+
+    if(island.equations.length){
+        // Add equations to solver
+        this.addEquations(island.equations);
+        mockWorld.bodies.length = 0;
+        island.getBodies(mockWorld.bodies);
+
+        // Solve
+        if(mockWorld.bodies.length){
+            this.solve(dt,mockWorld);
+        }
+    }
+};
+
+/**
+ * Sort all equations using the .equationSortFunction. Should be called by subclasses before solving.
+ * @method sortEquations
+ */
+Solver.prototype.sortEquations = function(){
+    if(this.equationSortFunction){
+        this.equations.sort(this.equationSortFunction);
+    }
+};
+
+/**
+ * Add an equation to be solved.
+ *
+ * @method addEquation
+ * @param {Equation} eq
+ */
+Solver.prototype.addEquation = function(eq){
+    if(eq.enabled){
+        this.equations.push(eq);
+    }
+};
+
+/**
+ * Add equations. Same as .addEquation, but this time the argument is an array of Equations
+ *
+ * @method addEquations
+ * @param {Array} eqs
+ */
+Solver.prototype.addEquations = function(eqs){
+    //Utils.appendArray(this.equations,eqs);
+    for(var i=0, N=eqs.length; i!==N; i++){
+        var eq = eqs[i];
+        if(eq.enabled){
+            this.equations.push(eq);
+        }
+    }
+};
+
+/**
+ * Remove an equation.
+ *
+ * @method removeEquation
+ * @param {Equation} eq
+ */
+Solver.prototype.removeEquation = function(eq){
+    var i = this.equations.indexOf(eq);
+    if(i !== -1){
+        this.equations.splice(i,1);
+    }
+};
+
+/**
+ * Remove all currently added equations.
+ *
+ * @method removeAllEquations
+ */
+Solver.prototype.removeAllEquations = function(){
+    this.equations.length=0;
+};
+
+Solver.GS = 1;
+Solver.ISLAND = 2;
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/solver\\Solver.js","/solver")
+},{"../events/EventEmitter":31,"../utils/Utils":54,"Zbi7gb":4,"buffer":1}],52:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var TupleDictionary = _dereq_('./TupleDictionary');
+var Utils = _dereq_('./Utils');
+
+module.exports = OverlapKeeper;
+
+/**
+ * Keeps track of overlaps in the current state and the last step state.
+ * @class OverlapKeeper
+ * @constructor
+ */
+function OverlapKeeper() {
+    this.overlappingShapesLastState = new TupleDictionary();
+    this.overlappingShapesCurrentState = new TupleDictionary();
+    this.recordPool = [];
+    this.tmpDict = new TupleDictionary();
+    this.tmpArray1 = [];
+}
+
+/**
+ * Ticks one step forward in time. This will move the current overlap state to the "old" overlap state, and create a new one as current.
+ * @method tick
+ */
+OverlapKeeper.prototype.tick = function() {
+    var last = this.overlappingShapesLastState;
+    var current = this.overlappingShapesCurrentState;
+
+    // Save old objects into pool
+    var l = last.keys.length;
+    while(l--){
+        var key = last.keys[l];
+        var lastObject = last.getByKey(key);
+        var currentObject = current.getByKey(key);
+        if(lastObject && !currentObject){
+            // The record is only used in the "last" dict, and will be removed. We might as well pool it.
+            this.recordPool.push(lastObject);
+        }
+    }
+
+    // Clear last object
+    last.reset();
+
+    // Transfer from new object to old
+    last.copy(current);
+
+    // Clear current object
+    current.reset();
+};
+
+/**
+ * @method setOverlapping
+ * @param {Body} bodyA
+ * @param {Body} shapeA
+ * @param {Body} bodyB
+ * @param {Body} shapeB
+ */
+OverlapKeeper.prototype.setOverlapping = function(bodyA, shapeA, bodyB, shapeB) {
+    var last = this.overlappingShapesLastState;
+    var current = this.overlappingShapesCurrentState;
+
+    // Store current contact state
+    if(!current.get(shapeA.id, shapeB.id)){
+
+        var data;
+        if(this.recordPool.length){
+            data = this.recordPool.pop();
+            data.set(bodyA, shapeA, bodyB, shapeB);
+        } else {
+            data = new OverlapKeeperRecord(bodyA, shapeA, bodyB, shapeB);
+        }
+
+        current.set(shapeA.id, shapeB.id, data);
+    }
+};
+
+OverlapKeeper.prototype.getNewOverlaps = function(result){
+    return this.getDiff(this.overlappingShapesLastState, this.overlappingShapesCurrentState, result);
+};
+
+OverlapKeeper.prototype.getEndOverlaps = function(result){
+    return this.getDiff(this.overlappingShapesCurrentState, this.overlappingShapesLastState, result);
+};
+
+/**
+ * Checks if two bodies are currently overlapping.
+ * @method bodiesAreOverlapping
+ * @param  {Body} bodyA
+ * @param  {Body} bodyB
+ * @return {boolean}
+ */
+OverlapKeeper.prototype.bodiesAreOverlapping = function(bodyA, bodyB){
+    var current = this.overlappingShapesCurrentState;
+    var l = current.keys.length;
+    while(l--){
+        var key = current.keys[l];
+        var data = current.data[key];
+        if((data.bodyA === bodyA && data.bodyB === bodyB) || data.bodyA === bodyB && data.bodyB === bodyA){
+            return true;
+        }
+    }
+    return false;
+};
+
+OverlapKeeper.prototype.getDiff = function(dictA, dictB, result){
+    var result = result || [];
+    var last = dictA;
+    var current = dictB;
+
+    result.length = 0;
+
+    var l = current.keys.length;
+    while(l--){
+        var key = current.keys[l];
+        var data = current.data[key];
+
+        if(!data){
+            throw new Error('Key '+key+' had no data!');
+        }
+
+        var lastData = last.data[key];
+        if(!lastData){
+            // Not overlapping in last state, but in current.
+            result.push(data);
+        }
+    }
+
+    return result;
+};
+
+OverlapKeeper.prototype.isNewOverlap = function(shapeA, shapeB){
+    var idA = shapeA.id|0,
+        idB = shapeB.id|0;
+    var last = this.overlappingShapesLastState;
+    var current = this.overlappingShapesCurrentState;
+    // Not in last but in new
+    return !!!last.get(idA, idB) && !!current.get(idA, idB);
+};
+
+OverlapKeeper.prototype.getNewBodyOverlaps = function(result){
+    this.tmpArray1.length = 0;
+    var overlaps = this.getNewOverlaps(this.tmpArray1);
+    return this.getBodyDiff(overlaps, result);
+};
+
+OverlapKeeper.prototype.getEndBodyOverlaps = function(result){
+    this.tmpArray1.length = 0;
+    var overlaps = this.getEndOverlaps(this.tmpArray1);
+    return this.getBodyDiff(overlaps, result);
+};
+
+OverlapKeeper.prototype.getBodyDiff = function(overlaps, result){
+    result = result || [];
+    var accumulator = this.tmpDict;
+
+    var l = overlaps.length;
+
+    while(l--){
+        var data = overlaps[l];
+
+        // Since we use body id's for the accumulator, these will be a subset of the original one
+        accumulator.set(data.bodyA.id|0, data.bodyB.id|0, data);
+    }
+
+    l = accumulator.keys.length;
+    while(l--){
+        var data = accumulator.getByKey(accumulator.keys[l]);
+        if(data){
+            result.push(data.bodyA, data.bodyB);
+        }
+    }
+
+    accumulator.reset();
+
+    return result;
+};
+
+/**
+ * Overlap data container for the OverlapKeeper
+ * @class OverlapKeeperRecord
+ * @constructor
+ * @param {Body} bodyA
+ * @param {Shape} shapeA
+ * @param {Body} bodyB
+ * @param {Shape} shapeB
+ */
+function OverlapKeeperRecord(bodyA, shapeA, bodyB, shapeB){
+    /**
+     * @property {Shape} shapeA
+     */
+    this.shapeA = shapeA;
+    /**
+     * @property {Shape} shapeB
+     */
+    this.shapeB = shapeB;
+    /**
+     * @property {Body} bodyA
+     */
+    this.bodyA = bodyA;
+    /**
+     * @property {Body} bodyB
+     */
+    this.bodyB = bodyB;
+}
+
+/**
+ * Set the data for the record
+ * @method set
+ * @param {Body} bodyA
+ * @param {Shape} shapeA
+ * @param {Body} bodyB
+ * @param {Shape} shapeB
+ */
+OverlapKeeperRecord.prototype.set = function(bodyA, shapeA, bodyB, shapeB){
+    OverlapKeeperRecord.call(this, bodyA, shapeA, bodyB, shapeB);
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/utils\\OverlapKeeper.js","/utils")
+},{"./TupleDictionary":53,"./Utils":54,"Zbi7gb":4,"buffer":1}],53:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Utils = _dereq_('./Utils');
+
+module.exports = TupleDictionary;
+
+/**
+ * @class TupleDictionary
+ * @constructor
+ */
+function TupleDictionary() {
+
+    /**
+     * The data storage
+     * @property data
+     * @type {Object}
+     */
+    this.data = {};
+
+    /**
+     * Keys that are currently used.
+     * @property {Array} keys
+     */
+    this.keys = [];
+}
+
+/**
+ * Generate a key given two integers
+ * @method getKey
+ * @param  {number} i
+ * @param  {number} j
+ * @return {string}
+ */
+TupleDictionary.prototype.getKey = function(id1, id2) {
+    id1 = id1|0;
+    id2 = id2|0;
+
+    if ( (id1|0) === (id2|0) ){
+        return -1;
+    }
+
+    // valid for values < 2^16
+    return ((id1|0) > (id2|0) ?
+        (id1 << 16) | (id2 & 0xFFFF) :
+        (id2 << 16) | (id1 & 0xFFFF))|0
+        ;
+};
+
+/**
+ * @method getByKey
+ * @param  {Number} key
+ * @return {Object}
+ */
+TupleDictionary.prototype.getByKey = function(key) {
+    key = key|0;
+    return this.data[key];
+};
+
+/**
+ * @method get
+ * @param  {Number} i
+ * @param  {Number} j
+ * @return {Number}
+ */
+TupleDictionary.prototype.get = function(i, j) {
+    return this.data[this.getKey(i, j)];
+};
+
+/**
+ * Set a value.
+ * @method set
+ * @param  {Number} i
+ * @param  {Number} j
+ * @param {Number} value
+ */
+TupleDictionary.prototype.set = function(i, j, value) {
+    if(!value){
+        throw new Error("No data!");
+    }
+
+    var key = this.getKey(i, j);
+
+    // Check if key already exists
+    if(!this.data[key]){
+        this.keys.push(key);
+    }
+
+    this.data[key] = value;
+
+    return key;
+};
+
+/**
+ * Remove all data.
+ * @method reset
+ */
+TupleDictionary.prototype.reset = function() {
+    var data = this.data,
+        keys = this.keys;
+
+    var l = keys.length;
+    while(l--) {
+        delete data[keys[l]];
+    }
+
+    keys.length = 0;
+};
+
+/**
+ * Copy another TupleDictionary. Note that all data in this dictionary will be removed.
+ * @method copy
+ * @param {TupleDictionary} dict The TupleDictionary to copy into this one.
+ */
+TupleDictionary.prototype.copy = function(dict) {
+    this.reset();
+    Utils.appendArray(this.keys, dict.keys);
+    var l = dict.keys.length;
+    while(l--){
+        var key = dict.keys[l];
+        this.data[key] = dict.data[key];
+    }
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/utils\\TupleDictionary.js","/utils")
+},{"./Utils":54,"Zbi7gb":4,"buffer":1}],54:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+/* global P2_ARRAY_TYPE */
+
+module.exports = Utils;
+
+/**
+ * Misc utility functions
+ * @class Utils
+ * @constructor
+ */
+function Utils(){}
+
+/**
+ * Append the values in array b to the array a. See <a href="http://stackoverflow.com/questions/1374126/how-to-append-an-array-to-an-existing-javascript-array/1374131#1374131">this</a> for an explanation.
+ * @method appendArray
+ * @static
+ * @param  {Array} a
+ * @param  {Array} b
+ */
+Utils.appendArray = function(a,b){
+    if (b.length < 150000) {
+        a.push.apply(a, b);
+    } else {
+        for (var i = 0, len = b.length; i !== len; ++i) {
+            a.push(b[i]);
+        }
+    }
+};
+
+/**
+ * Garbage free Array.splice(). Does not allocate a new array.
+ * @method splice
+ * @static
+ * @param  {Array} array
+ * @param  {Number} index
+ * @param  {Number} howmany
+ */
+Utils.splice = function(array,index,howmany){
+    howmany = howmany || 1;
+    for (var i=index, len=array.length-howmany; i < len; i++){
+        array[i] = array[i + howmany];
+    }
+    array.length = len;
+};
+
+/**
+ * The array type to use for internal numeric computations throughout the library. Float32Array is used if it is available, but falls back on Array. If you want to set array type manually, inject it via the global variable P2_ARRAY_TYPE. See example below.
+ * @static
+ * @property {function} ARRAY_TYPE
+ * @example
+ *     <script>
+ *         <!-- Inject your preferred array type before loading p2.js -->
+ *         P2_ARRAY_TYPE = Array;
+ *     </script>
+ *     <script src="p2.js"></script>
+ */
+if(typeof P2_ARRAY_TYPE !== 'undefined') {
+    Utils.ARRAY_TYPE = P2_ARRAY_TYPE;
+} else if (typeof Float32Array !== 'undefined'){
+    Utils.ARRAY_TYPE = Float32Array;
+} else {
+    Utils.ARRAY_TYPE = Array;
+}
+
+/**
+ * Extend an object with the properties of another
+ * @static
+ * @method extend
+ * @param  {object} a
+ * @param  {object} b
+ */
+Utils.extend = function(a,b){
+    for(var key in b){
+        a[key] = b[key];
+    }
+};
+
+/**
+ * Extend an options object with default values.
+ * @static
+ * @method defaults
+ * @param  {object} options The options object. May be falsy: in this case, a new object is created and returned.
+ * @param  {object} defaults An object containing default values.
+ * @return {object} The modified options object.
+ */
+Utils.defaults = function(options, defaults){
+    options = options || {};
+    for(var key in defaults){
+        if(!(key in options)){
+            options[key] = defaults[key];
+        }
+    }
+    return options;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/utils\\Utils.js","/utils")
+},{"Zbi7gb":4,"buffer":1}],55:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var Body = _dereq_('../objects/Body');
+
+module.exports = Island;
+
+/**
+ * An island of bodies connected with equations.
+ * @class Island
+ * @constructor
+ */
+function Island(){
+
+    /**
+     * Current equations in this island.
+     * @property equations
+     * @type {Array}
+     */
+    this.equations = [];
+
+    /**
+     * Current bodies in this island.
+     * @property bodies
+     * @type {Array}
+     */
+    this.bodies = [];
+}
+
+/**
+ * Clean this island from bodies and equations.
+ * @method reset
+ */
+Island.prototype.reset = function(){
+    this.equations.length = this.bodies.length = 0;
+};
+
+var bodyIds = [];
+
+/**
+ * Get all unique bodies in this island.
+ * @method getBodies
+ * @return {Array} An array of Body
+ */
+Island.prototype.getBodies = function(result){
+    var bodies = result || [],
+        eqs = this.equations;
+    bodyIds.length = 0;
+    for(var i=0; i!==eqs.length; i++){
+        var eq = eqs[i];
+        if(bodyIds.indexOf(eq.bodyA.id)===-1){
+            bodies.push(eq.bodyA);
+            bodyIds.push(eq.bodyA.id);
+        }
+        if(bodyIds.indexOf(eq.bodyB.id)===-1){
+            bodies.push(eq.bodyB);
+            bodyIds.push(eq.bodyB.id);
+        }
+    }
+    return bodies;
+};
+
+/**
+ * Check if the entire island wants to sleep.
+ * @method wantsToSleep
+ * @return {Boolean}
+ */
+Island.prototype.wantsToSleep = function(){
+    for(var i=0; i<this.bodies.length; i++){
+        var b = this.bodies[i];
+        if(b.type === Body.DYNAMIC && !b.wantsToSleep){
+            return false;
+        }
+    }
+    return true;
+};
+
+/**
+ * Make all bodies in the island sleep.
+ * @method sleep
+ */
+Island.prototype.sleep = function(){
+    for(var i=0; i<this.bodies.length; i++){
+        var b = this.bodies[i];
+        b.sleep();
+    }
+    return true;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/world\\Island.js","/world")
+},{"../objects/Body":36,"Zbi7gb":4,"buffer":1}],56:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+var vec2 = _dereq_('../math/vec2')
+,   Island = _dereq_('./Island')
+,   IslandNode = _dereq_('./IslandNode')
+,   Body = _dereq_('../objects/Body');
+
+module.exports = IslandManager;
+
+/**
+ * Splits the system of bodies and equations into independent islands
+ *
+ * @class IslandManager
+ * @constructor
+ * @param {Object} [options]
+ * @extends Solver
+ */
+function IslandManager(options){
+
+    // Pooling of node objects saves some GC load
+    this._nodePool = [];
+    this._islandPool = [];
+
+    /**
+     * The equations to split. Manually fill this array before running .split().
+     * @property {Array} equations
+     */
+    this.equations = [];
+
+    /**
+     * The resulting {{#crossLink "Island"}}{{/crossLink}}s.
+     * @property {Array} islands
+     */
+    this.islands = [];
+
+    /**
+     * The resulting graph nodes.
+     * @property {Array} nodes
+     */
+    this.nodes = [];
+
+    /**
+     * The node queue, used when traversing the graph of nodes.
+     * @private
+     * @property {Array} queue
+     */
+    this.queue = [];
+}
+
+/**
+ * Get an unvisited node from a list of nodes.
+ * @static
+ * @method getUnvisitedNode
+ * @param  {Array} nodes
+ * @return {IslandNode|boolean} The node if found, else false.
+ */
+IslandManager.getUnvisitedNode = function(nodes){
+    var Nnodes = nodes.length;
+    for(var i=0; i!==Nnodes; i++){
+        var node = nodes[i];
+        if(!node.visited && node.body.type === Body.DYNAMIC){
+            return node;
+        }
+    }
+    return false;
+};
+
+/**
+ * Visit a node.
+ * @method visit
+ * @param  {IslandNode} node
+ * @param  {Array} bds
+ * @param  {Array} eqs
+ */
+IslandManager.prototype.visit = function (node,bds,eqs){
+    bds.push(node.body);
+    var Neqs = node.equations.length;
+    for(var i=0; i!==Neqs; i++){
+        var eq = node.equations[i];
+        if(eqs.indexOf(eq) === -1){ // Already added?
+            eqs.push(eq);
+        }
+    }
+};
+
+/**
+ * Runs the search algorithm, starting at a root node. The resulting bodies and equations will be stored in the provided arrays.
+ * @method bfs
+ * @param  {IslandNode} root The node to start from
+ * @param  {Array} bds  An array to append resulting Bodies to.
+ * @param  {Array} eqs  An array to append resulting Equations to.
+ */
+IslandManager.prototype.bfs = function(root,bds,eqs){
+
+    // Reset the visit queue
+    var queue = this.queue;
+    queue.length = 0;
+
+    // Add root node to queue
+    queue.push(root);
+    root.visited = true;
+    this.visit(root,bds,eqs);
+
+    // Process all queued nodes
+    while(queue.length) {
+
+        // Get next node in the queue
+        var node = queue.pop();
+
+        // Visit unvisited neighboring nodes
+        var child;
+        while((child = IslandManager.getUnvisitedNode(node.neighbors))) {
+            child.visited = true;
+            this.visit(child,bds,eqs);
+
+            // Only visit the children of this node if it's dynamic
+            if(child.body.type === Body.DYNAMIC){
+                queue.push(child);
+            }
+        }
+    }
+};
+
+/**
+ * Split the world into independent islands. The result is stored in .islands.
+ * @method split
+ * @param  {World} world
+ * @return {Array} The generated islands
+ */
+IslandManager.prototype.split = function(world){
+    var bodies = world.bodies,
+        nodes = this.nodes,
+        equations = this.equations;
+
+    // Move old nodes to the node pool
+    while(nodes.length){
+        this._nodePool.push(nodes.pop());
+    }
+
+    // Create needed nodes, reuse if possible
+    for(var i=0; i!==bodies.length; i++){
+        if(this._nodePool.length){
+            var node = this._nodePool.pop();
+            node.reset();
+            node.body = bodies[i];
+            nodes.push(node);
+        } else {
+            nodes.push(new IslandNode(bodies[i]));
+        }
+    }
+
+    // Add connectivity data. Each equation connects 2 bodies.
+    for(var k=0; k!==equations.length; k++){
+        var eq=equations[k],
+            i=bodies.indexOf(eq.bodyA),
+            j=bodies.indexOf(eq.bodyB),
+            ni=nodes[i],
+            nj=nodes[j];
+        ni.neighbors.push(nj);
+        nj.neighbors.push(ni);
+        ni.equations.push(eq);
+        nj.equations.push(eq);
+    }
+
+    // Move old islands to the island pool
+    var islands = this.islands;
+    while(islands.length){
+        var island = islands.pop();
+        island.reset();
+        this._islandPool.push(island);
+    }
+
+    // Get islands
+    var child;
+    while((child = IslandManager.getUnvisitedNode(nodes))){
+
+        // Create new island
+        var island = this._islandPool.length ? this._islandPool.pop() : new Island();
+
+        // Get all equations and bodies in this island
+        this.bfs(child, island.bodies, island.equations);
+
+        islands.push(island);
+    }
+
+    return islands;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/world\\IslandManager.js","/world")
+},{"../math/vec2":35,"../objects/Body":36,"./Island":55,"./IslandNode":57,"Zbi7gb":4,"buffer":1}],57:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+module.exports = IslandNode;
+
+/**
+ * Holds a body and keeps track of some additional properties needed for graph traversal.
+ * @class IslandNode
+ * @constructor
+ * @param {Body} body
+ */
+function IslandNode(body){
+
+	/**
+	 * The body that is contained in this node.
+	 * @property {Body} body
+	 */
+    this.body = body;
+
+    /**
+     * Neighboring IslandNodes
+     * @property {Array} neighbors
+     */
+    this.neighbors = [];
+
+    /**
+     * Equations connected to this node.
+     * @property {Array} equations
+     */
+    this.equations = [];
+
+    /**
+     * If this node was visiting during the graph traversal.
+     * @property visited
+     * @type {Boolean}
+     */
+    this.visited = false;
+}
+
+/**
+ * Clean this node from bodies and equations.
+ * @method reset
+ */
+IslandNode.prototype.reset = function(){
+    this.equations.length = 0;
+    this.neighbors.length = 0;
+    this.visited = false;
+    this.body = null;
+};
+
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/world\\IslandNode.js","/world")
+},{"Zbi7gb":4,"buffer":1}],58:[function(_dereq_,module,exports){
+(function (process,global,Buffer,__argument0,__argument1,__argument2,__argument3,__filename,__dirname){
+/* global performance */
+/*jshint -W020 */
+
+var  GSSolver = _dereq_('../solver/GSSolver')
+,    Solver = _dereq_('../solver/Solver')
+,    NaiveBroadphase = _dereq_('../collision/NaiveBroadphase')
+,    Ray = _dereq_('../collision/Ray')
+,    vec2 = _dereq_('../math/vec2')
+,    Circle = _dereq_('../shapes/Circle')
+,    Rectangle = _dereq_('../shapes/Rectangle')
+,    Convex = _dereq_('../shapes/Convex')
+,    Line = _dereq_('../shapes/Line')
+,    Plane = _dereq_('../shapes/Plane')
+,    Capsule = _dereq_('../shapes/Capsule')
+,    Particle = _dereq_('../shapes/Particle')
+,    EventEmitter = _dereq_('../events/EventEmitter')
+,    Body = _dereq_('../objects/Body')
+,    Shape = _dereq_('../shapes/Shape')
+,    LinearSpring = _dereq_('../objects/LinearSpring')
+,    Material = _dereq_('../material/Material')
+,    ContactMaterial = _dereq_('../material/ContactMaterial')
+,    DistanceConstraint = _dereq_('../constraints/DistanceConstraint')
+,    Constraint = _dereq_('../constraints/Constraint')
+,    LockConstraint = _dereq_('../constraints/LockConstraint')
+,    RevoluteConstraint = _dereq_('../constraints/RevoluteConstraint')
+,    PrismaticConstraint = _dereq_('../constraints/PrismaticConstraint')
+,    GearConstraint = _dereq_('../constraints/GearConstraint')
+,    pkg = _dereq_('../../package.json')
+,    Broadphase = _dereq_('../collision/Broadphase')
+,    SAPBroadphase = _dereq_('../collision/SAPBroadphase')
+,    Narrowphase = _dereq_('../collision/Narrowphase')
+,    Utils = _dereq_('../utils/Utils')
+,    OverlapKeeper = _dereq_('../utils/OverlapKeeper')
+,    IslandManager = _dereq_('./IslandManager')
+,    RotationalSpring = _dereq_('../objects/RotationalSpring');
+
+module.exports = World;
+
+if(typeof performance === 'undefined'){
+    performance = {};
+}
+if(!performance.now){
+    var nowOffset = Date.now();
+    if (performance.timing && performance.timing.navigationStart){
+        nowOffset = performance.timing.navigationStart;
+    }
+    performance.now = function(){
+        return Date.now() - nowOffset;
+    };
+}
+
+/**
+ * The dynamics world, where all bodies and constraints lives.
+ *
+ * @class World
+ * @constructor
+ * @param {Object}          [options]
+ * @param {Solver}          [options.solver]            Defaults to GSSolver.
+ * @param {Array}           [options.gravity]           Defaults to [0,-9.78]
+ * @param {Broadphase}      [options.broadphase]        Defaults to NaiveBroadphase
+ * @param {Boolean}         [options.islandSplit=false]
+ * @param {Boolean}         [options.doProfiling=false]
+ * @extends EventEmitter
+ *
+ * @example
+ *     var world = new World({
+ *         gravity: [0, -9.81],
+ *         broadphase: new SAPBroadphase()
+ *     });
+ */
+function World(options){
+    EventEmitter.apply(this);
+
+    options = options || {};
+
+    /**
+     * All springs in the world. To add a spring to the world, use {{#crossLink "World/addSpring:method"}}{{/crossLink}}.
+     *
+     * @property springs
+     * @type {Array}
+     */
+    this.springs = [];
+
+    /**
+     * All bodies in the world. To add a body to the world, use {{#crossLink "World/addBody:method"}}{{/crossLink}}.
+     * @property {Array} bodies
+     */
+    this.bodies = [];
+
+    /**
+     * Disabled body collision pairs. See {{#crossLink "World/disableBodyCollision:method"}}.
+     * @private
+     * @property {Array} disabledBodyCollisionPairs
+     */
+    this.disabledBodyCollisionPairs = [];
+
+    /**
+     * The solver used to satisfy constraints and contacts. Default is {{#crossLink "GSSolver"}}{{/crossLink}}.
+     * @property {Solver} solver
+     */
+    this.solver = options.solver || new GSSolver();
+
+    /**
+     * The narrowphase to use to generate contacts.
+     *
+     * @property narrowphase
+     * @type {Narrowphase}
+     */
+    this.narrowphase = new Narrowphase(this);
+
+    /**
+     * The island manager of this world.
+     * @property {IslandManager} islandManager
+     */
+    this.islandManager = new IslandManager();
+
+    /**
+     * Gravity in the world. This is applied on all bodies in the beginning of each step().
+     *
+     * @property gravity
+     * @type {Array}
+     */
+    this.gravity = vec2.fromValues(0, -9.78);
+    if(options.gravity){
+        vec2.copy(this.gravity, options.gravity);
+    }
+
+    /**
+     * Gravity to use when approximating the friction max force (mu*mass*gravity).
+     * @property {Number} frictionGravity
+     */
+    this.frictionGravity = vec2.length(this.gravity) || 10;
+
+    /**
+     * Set to true if you want .frictionGravity to be automatically set to the length of .gravity.
+     * @property {Boolean} useWorldGravityAsFrictionGravity
+     */
+    this.useWorldGravityAsFrictionGravity = true;
+
+    /**
+     * If the length of .gravity is zero, and .useWorldGravityAsFrictionGravity=true, then switch to using .frictionGravity for friction instead. This fallback is useful for gravityless games.
+     * @property {Boolean} useFrictionGravityOnZeroGravity
+     */
+    this.useFrictionGravityOnZeroGravity = true;
+
+    /**
+     * Whether to do timing measurements during the step() or not.
+     *
+     * @property doPofiling
+     * @type {Boolean}
+     */
+    this.doProfiling = options.doProfiling || false;
+
+    /**
+     * How many millisecconds the last step() took. This is updated each step if .doProfiling is set to true.
+     *
+     * @property lastStepTime
+     * @type {Number}
+     */
+    this.lastStepTime = 0.0;
+
+    /**
+     * The broadphase algorithm to use.
+     *
+     * @property broadphase
+     * @type {Broadphase}
+     */
+    this.broadphase = options.broadphase || new SAPBroadphase();
+    this.broadphase.setWorld(this);
+
+    /**
+     * User-added constraints.
+     *
+     * @property constraints
+     * @type {Array}
+     */
+    this.constraints = [];
+
+    /**
+     * Dummy default material in the world, used in .defaultContactMaterial
+     * @property {Material} defaultMaterial
+     */
+    this.defaultMaterial = new Material();
+
+    /**
+     * The default contact material to use, if no contact material was set for the colliding materials.
+     * @property {ContactMaterial} defaultContactMaterial
+     */
+    this.defaultContactMaterial = new ContactMaterial(this.defaultMaterial,this.defaultMaterial);
+
+    /**
+     * For keeping track of what time step size we used last step
+     * @property lastTimeStep
+     * @type {Number}
+     */
+    this.lastTimeStep = 1/60;
+
+    /**
+     * Enable to automatically apply spring forces each step.
+     * @property applySpringForces
+     * @type {Boolean}
+     */
+    this.applySpringForces = true;
+
+    /**
+     * Enable to automatically apply body damping each step.
+     * @property applyDamping
+     * @type {Boolean}
+     */
+    this.applyDamping = true;
+
+    /**
+     * Enable to automatically apply gravity each step.
+     * @property applyGravity
+     * @type {Boolean}
+     */
+    this.applyGravity = true;
+
+    /**
+     * Enable/disable constraint solving in each step.
+     * @property solveConstraints
+     * @type {Boolean}
+     */
+    this.solveConstraints = true;
+
+    /**
+     * The ContactMaterials added to the World.
+     * @property contactMaterials
+     * @type {Array}
+     */
+    this.contactMaterials = [];
+
+    /**
+     * World time.
+     * @property time
+     * @type {Number}
+     */
+    this.time = 0.0;
+
+    /**
+     * Is true during the step().
+     * @property {Boolean} stepping
+     */
+    this.stepping = false;
+
+    /**
+     * Bodies that are scheduled to be removed at the end of the step.
+     * @property {Array} bodiesToBeRemoved
+     * @private
+     */
+    this.bodiesToBeRemoved = [];
+
+    this.fixedStepTime = 0.0;
+
+    /**
+     * Whether to enable island splitting. Island splitting can be an advantage for many things, including solver performance. See {{#crossLink "IslandManager"}}{{/crossLink}}.
+     * @property {Boolean} islandSplit
+     */
+    this.islandSplit = typeof(options.islandSplit)!=="undefined" ? !!options.islandSplit : false;
+
+    /**
+     * Set to true if you want to the world to emit the "impact" event. Turning this off could improve performance.
+     * @property emitImpactEvent
+     * @type {Boolean}
+     */
+    this.emitImpactEvent = true;
+
+    // Id counters
+    this._constraintIdCounter = 0;
+    this._bodyIdCounter = 0;
+
+    /**
+     * Fired after the step().
+     * @event postStep
+     */
+    this.postStepEvent = {
+        type : "postStep",
+    };
+
+    /**
+     * Fired when a body is added to the world.
+     * @event addBody
+     * @param {Body} body
+     */
+    this.addBodyEvent = {
+        type : "addBody",
+        body : null
+    };
+
+    /**
+     * Fired when a body is removed from the world.
+     * @event removeBody
+     * @param {Body} body
+     */
+    this.removeBodyEvent = {
+        type : "removeBody",
+        body : null
+    };
+
+    /**
+     * Fired when a spring is added to the world.
+     * @event addSpring
+     * @param {Spring} spring
+     */
+    this.addSpringEvent = {
+        type : "addSpring",
+        spring : null,
+    };
+
+    /**
+     * Fired when a first contact is created between two bodies. This event is fired after the step has been done.
+     * @event impact
+     * @param {Body} bodyA
+     * @param {Body} bodyB
+     */
+    this.impactEvent = {
+        type: "impact",
+        bodyA : null,
+        bodyB : null,
+        shapeA : null,
+        shapeB : null,
+        contactEquation : null,
+    };
+
+    /**
+     * Fired after the Broadphase has collected collision pairs in the world.
+     * Inside the event handler, you can modify the pairs array as you like, to
+     * prevent collisions between objects that you don't want.
+     * @event postBroadphase
+     * @param {Array} pairs An array of collision pairs. If this array is [body1,body2,body3,body4], then the body pairs 1,2 and 3,4 would advance to narrowphase.
+     */
+    this.postBroadphaseEvent = {
+        type:"postBroadphase",
+        pairs:null,
+    };
+
+    /**
+     * How to deactivate bodies during simulation. Possible modes are: {{#crossLink "World/NO_SLEEPING:property"}}World.NO_SLEEPING{{/crossLink}}, {{#crossLink "World/BODY_SLEEPING:property"}}World.BODY_SLEEPING{{/crossLink}} and {{#crossLink "World/ISLAND_SLEEPING:property"}}World.ISLAND_SLEEPING{{/crossLink}}.
+     * If sleeping is enabled, you might need to {{#crossLink "Body/wakeUp:method"}}wake up{{/crossLink}} the bodies if they fall asleep when they shouldn't. If you want to enable sleeping in the world, but want to disable it for a particular body, see {{#crossLink "Body/allowSleep:property"}}Body.allowSleep{{/crossLink}}.
+     * @property sleepMode
+     * @type {number}
+     * @default World.NO_SLEEPING
+     */
+    this.sleepMode = World.NO_SLEEPING;
+
+    /**
+     * Fired when two shapes starts start to overlap. Fired in the narrowphase, during step.
+     * @event beginContact
+     * @param {Shape} shapeA
+     * @param {Shape} shapeB
+     * @param {Body}  bodyA
+     * @param {Body}  bodyB
+     * @param {Array} contactEquations
+     */
+    this.beginContactEvent = {
+        type:"beginContact",
+        shapeA : null,
+        shapeB : null,
+        bodyA : null,
+        bodyB : null,
+        contactEquations : [],
+    };
+
+    /**
+     * Fired when two shapes stop overlapping, after the narrowphase (during step).
+     * @event endContact
+     * @param {Shape} shapeA
+     * @param {Shape} shapeB
+     * @param {Body}  bodyA
+     * @param {Body}  bodyB
+     * @param {Array} contactEquations
+     */
+    this.endContactEvent = {
+        type:"endContact",
+        shapeA : null,
+        shapeB : null,
+        bodyA : null,
+        bodyB : null,
+    };
+
+    /**
+     * Fired just before equations are added to the solver to be solved. Can be used to control what equations goes into the solver.
+     * @event preSolve
+     * @param {Array} contactEquations  An array of contacts to be solved.
+     * @param {Array} frictionEquations An array of friction equations to be solved.
+     */
+    this.preSolveEvent = {
+        type:"preSolve",
+        contactEquations:null,
+        frictionEquations:null,
+    };
+
+    // For keeping track of overlapping shapes
+    this.overlappingShapesLastState = { keys:[] };
+    this.overlappingShapesCurrentState = { keys:[] };
+
+    this.overlapKeeper = new OverlapKeeper();
+}
+World.prototype = new Object(EventEmitter.prototype);
+World.prototype.constructor = World;
+
+/**
+ * Never deactivate bodies.
+ * @static
+ * @property {number} NO_SLEEPING
+ */
+World.NO_SLEEPING = 1;
+
+/**
+ * Deactivate individual bodies if they are sleepy.
+ * @static
+ * @property {number} BODY_SLEEPING
+ */
+World.BODY_SLEEPING = 2;
+
+/**
+ * Deactivates bodies that are in contact, if all of them are sleepy. Note that you must enable {{#crossLink "World/islandSplit:property"}}.islandSplit{{/crossLink}} for this to work.
+ * @static
+ * @property {number} ISLAND_SLEEPING
+ */
+World.ISLAND_SLEEPING = 4;
+
+/**
+ * Add a constraint to the simulation.
+ *
+ * @method addConstraint
+ * @param {Constraint} c
+ */
+World.prototype.addConstraint = function(c){
+    this.constraints.push(c);
+};
+
+/**
+ * Add a ContactMaterial to the simulation.
+ * @method addContactMaterial
+ * @param {ContactMaterial} contactMaterial
+ */
+World.prototype.addContactMaterial = function(contactMaterial){
+    this.contactMaterials.push(contactMaterial);
+};
+
+/**
+ * Removes a contact material
+ *
+ * @method removeContactMaterial
+ * @param {ContactMaterial} cm
+ */
+World.prototype.removeContactMaterial = function(cm){
+    var idx = this.contactMaterials.indexOf(cm);
+    if(idx!==-1){
+        Utils.splice(this.contactMaterials,idx,1);
+    }
+};
+
+/**
+ * Get a contact material given two materials
+ * @method getContactMaterial
+ * @param {Material} materialA
+ * @param {Material} materialB
+ * @return {ContactMaterial} The matching ContactMaterial, or false on fail.
+ * @todo Use faster hash map to lookup from material id's
+ */
+World.prototype.getContactMaterial = function(materialA,materialB){
+    var cmats = this.contactMaterials;
+    for(var i=0, N=cmats.length; i!==N; i++){
+        var cm = cmats[i];
+        if( (cm.materialA.id === materialA.id) && (cm.materialB.id === materialB.id) ||
+            (cm.materialA.id === materialB.id) && (cm.materialB.id === materialA.id) ){
+            return cm;
+        }
+    }
+    return false;
+};
+
+/**
+ * Removes a constraint
+ *
+ * @method removeConstraint
+ * @param {Constraint} c
+ */
+World.prototype.removeConstraint = function(c){
+    var idx = this.constraints.indexOf(c);
+    if(idx!==-1){
+        Utils.splice(this.constraints,idx,1);
+    }
+};
+
+var step_r = vec2.create(),
+    step_runit = vec2.create(),
+    step_u = vec2.create(),
+    step_f = vec2.create(),
+    step_fhMinv = vec2.create(),
+    step_velodt = vec2.create(),
+    step_mg = vec2.create(),
+    xiw = vec2.fromValues(0,0),
+    xjw = vec2.fromValues(0,0),
+    zero = vec2.fromValues(0,0),
+    interpvelo = vec2.fromValues(0,0);
+
+/**
+ * Step the physics world forward in time.
+ *
+ * There are two modes. The simple mode is fixed timestepping without interpolation. In this case you only use the first argument. The second case uses interpolation. In that you also provide the time since the function was last used, as well as the maximum fixed timesteps to take.
+ *
+ * @method step
+ * @param {Number} dt                       The fixed time step size to use.
+ * @param {Number} [timeSinceLastCalled=0]  The time elapsed since the function was last called.
+ * @param {Number} [maxSubSteps=10]         Maximum number of fixed steps to take per function call.
+ *
+ * @example
+ *     // fixed timestepping without interpolation
+ *     var world = new World();
+ *     world.step(0.01);
+ *
+ * @see http://bulletphysics.org/mediawiki-1.5.8/index.php/Stepping_The_World
+ */
+World.prototype.step = function(dt,timeSinceLastCalled,maxSubSteps){
+    maxSubSteps = maxSubSteps || 10;
+    timeSinceLastCalled = timeSinceLastCalled || 0;
+
+    if(timeSinceLastCalled === 0){ // Fixed, simple stepping
+
+        this.internalStep(dt);
+
+        // Increment time
+        this.time += dt;
+
+    } else {
+
+        // Compute the number of fixed steps we should have taken since the last step
+        var internalSteps = Math.floor( (this.time+timeSinceLastCalled) / dt) - Math.floor(this.time / dt);
+        internalSteps = Math.min(internalSteps,maxSubSteps);
+
+        // Do some fixed steps to catch up
+        var t0 = performance.now();
+        for(var i=0; i!==internalSteps; i++){
+            this.internalStep(dt);
+            if(performance.now() - t0 > dt*1000){
+                // We are slower than real-time. Better bail out.
+                break;
+            }
+        }
+
+        // Increment internal clock
+        this.time += timeSinceLastCalled;
+
+        // Compute "Left over" time step
+        var h = this.time % dt;
+        var h_div_dt = h/dt;
+
+        for(var j=0; j!==this.bodies.length; j++){
+            var b = this.bodies[j];
+            if(b.type !== Body.STATIC && b.sleepState !== Body.SLEEPING){
+                // Interpolate
+                vec2.sub(interpvelo, b.position, b.previousPosition);
+                vec2.scale(interpvelo, interpvelo, h_div_dt);
+                vec2.add(b.interpolatedPosition, b.position, interpvelo);
+
+                b.interpolatedAngle = b.angle + (b.angle - b.previousAngle) * h_div_dt;
+            } else {
+                // For static bodies, just copy. Who else will do it?
+                vec2.copy(b.interpolatedPosition, b.position);
+                b.interpolatedAngle = b.angle;
+            }
+        }
+    }
+};
+
+var endOverlaps = [];
+
+/**
+ * Make a fixed step.
+ * @method internalStep
+ * @param  {number} dt
+ * @private
+ */
+World.prototype.internalStep = function(dt){
+    this.stepping = true;
+
+    var that = this,
+        doProfiling = this.doProfiling,
+        Nsprings = this.springs.length,
+        springs = this.springs,
+        bodies = this.bodies,
+        g = this.gravity,
+        solver = this.solver,
+        Nbodies = this.bodies.length,
+        broadphase = this.broadphase,
+        np = this.narrowphase,
+        constraints = this.constraints,
+        t0, t1,
+        fhMinv = step_fhMinv,
+        velodt = step_velodt,
+        mg = step_mg,
+        scale = vec2.scale,
+        add = vec2.add,
+        rotate = vec2.rotate,
+        islandManager = this.islandManager;
+
+    this.overlapKeeper.tick();
+
+    this.lastTimeStep = dt;
+
+    if(doProfiling){
+        t0 = performance.now();
+    }
+
+    // Update approximate friction gravity.
+    if(this.useWorldGravityAsFrictionGravity){
+        var gravityLen = vec2.length(this.gravity);
+        if(!(gravityLen === 0 && this.useFrictionGravityOnZeroGravity)){
+            // Nonzero gravity. Use it.
+            this.frictionGravity = gravityLen;
+        }
+    }
+
+    // Add gravity to bodies
+    if(this.applyGravity){
+        for(var i=0; i!==Nbodies; i++){
+            var b = bodies[i],
+                fi = b.force;
+            if(b.type !== Body.DYNAMIC || b.sleepState === Body.SLEEPING){
+                continue;
+            }
+            vec2.scale(mg,g,b.mass*b.gravityScale); // F=m*g
+            add(fi,fi,mg);
+        }
+    }
+
+    // Add spring forces
+    if(this.applySpringForces){
+        for(var i=0; i!==Nsprings; i++){
+            var s = springs[i];
+            s.applyForce();
+        }
+    }
+
+    if(this.applyDamping){
+        for(var i=0; i!==Nbodies; i++){
+            var b = bodies[i];
+            if(b.type === Body.DYNAMIC){
+                b.applyDamping(dt);
+            }
+        }
+    }
+
+    // Broadphase
+    var result = broadphase.getCollisionPairs(this);
+
+    // Remove ignored collision pairs
+    var ignoredPairs = this.disabledBodyCollisionPairs;
+    for(var i=ignoredPairs.length-2; i>=0; i-=2){
+        for(var j=result.length-2; j>=0; j-=2){
+            if( (ignoredPairs[i]   === result[j] && ignoredPairs[i+1] === result[j+1]) ||
+                (ignoredPairs[i+1] === result[j] && ignoredPairs[i]   === result[j+1])){
+                result.splice(j,2);
+            }
+        }
+    }
+
+    // Remove constrained pairs with collideConnected == false
+    var Nconstraints = constraints.length;
+    for(i=0; i!==Nconstraints; i++){
+        var c = constraints[i];
+        if(!c.collideConnected){
+            for(var j=result.length-2; j>=0; j-=2){
+                if( (c.bodyA === result[j] && c.bodyB === result[j+1]) ||
+                    (c.bodyB === result[j] && c.bodyA === result[j+1])){
+                    result.splice(j,2);
+                }
+            }
+        }
+    }
+
+    // postBroadphase event
+    this.postBroadphaseEvent.pairs = result;
+    this.emit(this.postBroadphaseEvent);
+
+    // Narrowphase
+    np.reset(this);
+    for(var i=0, Nresults=result.length; i!==Nresults; i+=2){
+        var bi = result[i],
+            bj = result[i+1];
+
+        // Loop over all shapes of body i
+        for(var k=0, Nshapesi=bi.shapes.length; k!==Nshapesi; k++){
+            var si = bi.shapes[k],
+                xi = bi.shapeOffsets[k],
+                ai = bi.shapeAngles[k];
+
+            // All shapes of body j
+            for(var l=0, Nshapesj=bj.shapes.length; l!==Nshapesj; l++){
+                var sj = bj.shapes[l],
+                    xj = bj.shapeOffsets[l],
+                    aj = bj.shapeAngles[l];
+
+                var cm = this.defaultContactMaterial;
+                if(si.material && sj.material){
+                    var tmp = this.getContactMaterial(si.material,sj.material);
+                    if(tmp){
+                        cm = tmp;
+                    }
+                }
+
+                this.runNarrowphase(np,bi,si,xi,ai,bj,sj,xj,aj,cm,this.frictionGravity);
+            }
+        }
+    }
+
+    // Wake up bodies
+    for(var i=0; i!==Nbodies; i++){
+        var body = bodies[i];
+        if(body._wakeUpAfterNarrowphase){
+            body.wakeUp();
+            body._wakeUpAfterNarrowphase = false;
+        }
+    }
+
+    // Emit end overlap events
+    if(this.has('endContact')){
+        this.overlapKeeper.getEndOverlaps(endOverlaps);
+        var e = this.endContactEvent;
+        var l = endOverlaps.length;
+        while(l--){
+            var data = endOverlaps[l];
+            e.shapeA = data.shapeA;
+            e.shapeB = data.shapeB;
+            e.bodyA = data.bodyA;
+            e.bodyB = data.bodyB;
+            this.emit(e);
+        }
+    }
+
+    var preSolveEvent = this.preSolveEvent;
+    preSolveEvent.contactEquations = np.contactEquations;
+    preSolveEvent.frictionEquations = np.frictionEquations;
+    this.emit(preSolveEvent);
+
+    // update constraint equations
+    var Nconstraints = constraints.length;
+    for(i=0; i!==Nconstraints; i++){
+        constraints[i].update();
+    }
+
+    if(np.contactEquations.length || np.frictionEquations.length || constraints.length){
+        if(this.islandSplit){
+            // Split into islands
+            islandManager.equations.length = 0;
+            Utils.appendArray(islandManager.equations, np.contactEquations);
+            Utils.appendArray(islandManager.equations, np.frictionEquations);
+            for(i=0; i!==Nconstraints; i++){
+                Utils.appendArray(islandManager.equations, constraints[i].equations);
+            }
+            islandManager.split(this);
+
+            for(var i=0; i!==islandManager.islands.length; i++){
+                var island = islandManager.islands[i];
+                if(island.equations.length){
+                    solver.solveIsland(dt,island);
+                }
+            }
+
+        } else {
+
+            // Add contact equations to solver
+            solver.addEquations(np.contactEquations);
+            solver.addEquations(np.frictionEquations);
+
+            // Add user-defined constraint equations
+            for(i=0; i!==Nconstraints; i++){
+                solver.addEquations(constraints[i].equations);
+            }
+
+            if(this.solveConstraints){
+                solver.solve(dt,this);
+            }
+
+            solver.removeAllEquations();
+        }
+    }
+
+    // Step forward
+    for(var i=0; i!==Nbodies; i++){
+        var body = bodies[i];
+
+        if(body.sleepState !== Body.SLEEPING && body.type !== Body.STATIC){
+            body.integrate(dt);
+        }
+    }
+
+    // Reset force
+    for(var i=0; i!==Nbodies; i++){
+        bodies[i].setZeroForce();
+    }
+
+    if(doProfiling){
+        t1 = performance.now();
+        that.lastStepTime = t1-t0;
+    }
+
+    // Emit impact event
+    if(this.emitImpactEvent && this.has('impact')){
+        var ev = this.impactEvent;
+        for(var i=0; i!==np.contactEquations.length; i++){
+            var eq = np.contactEquations[i];
+            if(eq.firstImpact){
+                ev.bodyA = eq.bodyA;
+                ev.bodyB = eq.bodyB;
+                ev.shapeA = eq.shapeA;
+                ev.shapeB = eq.shapeB;
+                ev.contactEquation = eq;
+                this.emit(ev);
+            }
+        }
+    }
+
+    // Sleeping update
+    if(this.sleepMode === World.BODY_SLEEPING){
+        for(i=0; i!==Nbodies; i++){
+            bodies[i].sleepTick(this.time, false, dt);
+        }
+    } else if(this.sleepMode === World.ISLAND_SLEEPING && this.islandSplit){
+
+        // Tell all bodies to sleep tick but dont sleep yet
+        for(i=0; i!==Nbodies; i++){
+            bodies[i].sleepTick(this.time, true, dt);
+        }
+
+        // Sleep islands
+        for(var i=0; i<this.islandManager.islands.length; i++){
+            var island = this.islandManager.islands[i];
+            if(island.wantsToSleep()){
+                island.sleep();
+            }
+        }
+    }
+
+    this.stepping = false;
+
+    // Remove bodies that are scheduled for removal
+    if(this.bodiesToBeRemoved.length){
+        for(var i=0; i!==this.bodiesToBeRemoved.length; i++){
+            this.removeBody(this.bodiesToBeRemoved[i]);
+        }
+        this.bodiesToBeRemoved.length = 0;
+    }
+
+    this.emit(this.postStepEvent);
+};
+
+/**
+ * Runs narrowphase for the shape pair i and j.
+ * @method runNarrowphase
+ * @param  {Narrowphase} np
+ * @param  {Body} bi
+ * @param  {Shape} si
+ * @param  {Array} xi
+ * @param  {Number} ai
+ * @param  {Body} bj
+ * @param  {Shape} sj
+ * @param  {Array} xj
+ * @param  {Number} aj
+ * @param  {Number} mu
+ */
+World.prototype.runNarrowphase = function(np,bi,si,xi,ai,bj,sj,xj,aj,cm,glen){
+
+    // Check collision groups and masks
+    if(!((si.collisionGroup & sj.collisionMask) !== 0 && (sj.collisionGroup & si.collisionMask) !== 0)){
+        return;
+    }
+
+    // Get world position and angle of each shape
+    vec2.rotate(xiw, xi, bi.angle);
+    vec2.rotate(xjw, xj, bj.angle);
+    vec2.add(xiw, xiw, bi.position);
+    vec2.add(xjw, xjw, bj.position);
+    var aiw = ai + bi.angle;
+    var ajw = aj + bj.angle;
+
+    np.enableFriction = cm.friction > 0;
+    np.frictionCoefficient = cm.friction;
+    var reducedMass;
+    if(bi.type === Body.STATIC || bi.type === Body.KINEMATIC){
+        reducedMass = bj.mass;
+    } else if(bj.type === Body.STATIC || bj.type === Body.KINEMATIC){
+        reducedMass = bi.mass;
+    } else {
+        reducedMass = (bi.mass*bj.mass)/(bi.mass+bj.mass);
+    }
+    np.slipForce = cm.friction*glen*reducedMass;
+    np.restitution = cm.restitution;
+    np.surfaceVelocity = cm.surfaceVelocity;
+    np.frictionStiffness = cm.frictionStiffness;
+    np.frictionRelaxation = cm.frictionRelaxation;
+    np.stiffness = cm.stiffness;
+    np.relaxation = cm.relaxation;
+    np.contactSkinSize = cm.contactSkinSize;
+    np.enabledEquations = bi.collisionResponse && bj.collisionResponse && si.collisionResponse && sj.collisionResponse;
+
+    var resolver = np[si.type | sj.type],
+        numContacts = 0;
+    if (resolver) {
+        var sensor = si.sensor || sj.sensor;
+        var numFrictionBefore = np.frictionEquations.length;
+        if (si.type < sj.type) {
+            numContacts = resolver.call(np, bi,si,xiw,aiw, bj,sj,xjw,ajw, sensor);
+        } else {
+            numContacts = resolver.call(np, bj,sj,xjw,ajw, bi,si,xiw,aiw, sensor);
+        }
+        var numFrictionEquations = np.frictionEquations.length - numFrictionBefore;
+
+        if(numContacts){
+
+            if( bi.allowSleep &&
+                bi.type === Body.DYNAMIC &&
+                bi.sleepState  === Body.SLEEPING &&
+                bj.sleepState  === Body.AWAKE &&
+                bj.type !== Body.STATIC
+            ){
+                var speedSquaredB = vec2.squaredLength(bj.velocity) + Math.pow(bj.angularVelocity,2);
+                var speedLimitSquaredB = Math.pow(bj.sleepSpeedLimit,2);
+                if(speedSquaredB >= speedLimitSquaredB*2){
+                    bi._wakeUpAfterNarrowphase = true;
+                }
+            }
+
+            if( bj.allowSleep &&
+                bj.type === Body.DYNAMIC &&
+                bj.sleepState  === Body.SLEEPING &&
+                bi.sleepState  === Body.AWAKE &&
+                bi.type !== Body.STATIC
+            ){
+                var speedSquaredA = vec2.squaredLength(bi.velocity) + Math.pow(bi.angularVelocity,2);
+                var speedLimitSquaredA = Math.pow(bi.sleepSpeedLimit,2);
+                if(speedSquaredA >= speedLimitSquaredA*2){
+                    bj._wakeUpAfterNarrowphase = true;
+                }
+            }
+
+            this.overlapKeeper.setOverlapping(bi, si, bj, sj);
+            if(this.has('beginContact') && this.overlapKeeper.isNewOverlap(si, sj)){
+
+                // Report new shape overlap
+                var e = this.beginContactEvent;
+                e.shapeA = si;
+                e.shapeB = sj;
+                e.bodyA = bi;
+                e.bodyB = bj;
+
+                // Reset contact equations
+                e.contactEquations.length = 0;
+
+                if(typeof(numContacts)==="number"){
+                    for(var i=np.contactEquations.length-numContacts; i<np.contactEquations.length; i++){
+                        e.contactEquations.push(np.contactEquations[i]);
+                    }
+                }
+
+                this.emit(e);
+            }
+
+            // divide the max friction force by the number of contacts
+            if(typeof(numContacts)==="number" && numFrictionEquations > 1){ // Why divide by 1?
+                for(var i=np.frictionEquations.length-numFrictionEquations; i<np.frictionEquations.length; i++){
+                    var f = np.frictionEquations[i];
+                    f.setSlipForce(f.getSlipForce() / numFrictionEquations);
+                }
+            }
+        }
+    }
+
+};
+
+/**
+ * Add a spring to the simulation
+ *
+ * @method addSpring
+ * @param {Spring} s
+ */
+World.prototype.addSpring = function(s){
+    this.springs.push(s);
+    this.addSpringEvent.spring = s;
+    this.emit(this.addSpringEvent);
+};
+
+/**
+ * Remove a spring
+ *
+ * @method removeSpring
+ * @param {Spring} s
+ */
+World.prototype.removeSpring = function(s){
+    var idx = this.springs.indexOf(s);
+    if(idx!==-1){
+        Utils.splice(this.springs,idx,1);
+    }
+};
+
+/**
+ * Add a body to the simulation
+ *
+ * @method addBody
+ * @param {Body} body
+ *
+ * @example
+ *     var world = new World(),
+ *         body = new Body();
+ *     world.addBody(body);
+ * @todo What if this is done during step?
+ */
+World.prototype.addBody = function(body){
+    if(this.bodies.indexOf(body) === -1){
+        this.bodies.push(body);
+        body.world = this;
+        this.addBodyEvent.body = body;
+        this.emit(this.addBodyEvent);
+    }
+};
+
+/**
+ * Remove a body from the simulation. If this method is called during step(), the body removal is scheduled to after the step.
+ *
+ * @method removeBody
+ * @param {Body} body
+ */
+World.prototype.removeBody = function(body){
+    if(this.stepping){
+        this.bodiesToBeRemoved.push(body);
+    } else {
+        body.world = null;
+        var idx = this.bodies.indexOf(body);
+        if(idx!==-1){
+            Utils.splice(this.bodies,idx,1);
+            this.removeBodyEvent.body = body;
+            body.resetConstraintVelocity();
+            this.emit(this.removeBodyEvent);
+        }
+    }
+};
+
+/**
+ * Get a body by its id.
+ * @method getBodyById
+ * @return {Body|Boolean} The body, or false if it was not found.
+ */
+World.prototype.getBodyById = function(id){
+    var bodies = this.bodies;
+    for(var i=0; i<bodies.length; i++){
+        var b = bodies[i];
+        if(b.id === id){
+            return b;
+        }
+    }
+    return false;
+};
+
+/**
+ * Disable collision between two bodies
+ * @method disableCollision
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ */
+World.prototype.disableBodyCollision = function(bodyA,bodyB){
+    this.disabledBodyCollisionPairs.push(bodyA,bodyB);
+};
+
+/**
+ * Enable collisions between the given two bodies
+ * @method enableCollision
+ * @param {Body} bodyA
+ * @param {Body} bodyB
+ */
+World.prototype.enableBodyCollision = function(bodyA,bodyB){
+    var pairs = this.disabledBodyCollisionPairs;
+    for(var i=0; i<pairs.length; i+=2){
+        if((pairs[i] === bodyA && pairs[i+1] === bodyB) || (pairs[i+1] === bodyA && pairs[i] === bodyB)){
+            pairs.splice(i,2);
+            return;
+        }
+    }
+};
+
+
+function v2a(v){
+    if(!v){
+        return v;
+    }
+    return [v[0],v[1]];
+}
+
+function extend(a,b){
+    for(var key in b){
+        a[key] = b[key];
+    }
+}
+
+function contactMaterialToJSON(cm){
+    return {
+        id : cm.id,
+        materialA :             cm.materialA.id,
+        materialB :             cm.materialB.id,
+        friction :              cm.friction,
+        restitution :           cm.restitution,
+        stiffness :             cm.stiffness,
+        relaxation :            cm.relaxation,
+        frictionStiffness :     cm.frictionStiffness,
+        frictionRelaxation :    cm.frictionRelaxation,
+    };
+}
+
+/**
+ * Resets the World, removes all bodies, constraints and springs.
+ *
+ * @method clear
+ */
+World.prototype.clear = function(){
+
+    this.time = 0;
+    this.fixedStepTime = 0;
+
+    // Remove all solver equations
+    if(this.solver && this.solver.equations.length){
+        this.solver.removeAllEquations();
+    }
+
+    // Remove all constraints
+    var cs = this.constraints;
+    for(var i=cs.length-1; i>=0; i--){
+        this.removeConstraint(cs[i]);
+    }
+
+    // Remove all bodies
+    var bodies = this.bodies;
+    for(var i=bodies.length-1; i>=0; i--){
+        this.removeBody(bodies[i]);
+    }
+
+    // Remove all springs
+    var springs = this.springs;
+    for(var i=springs.length-1; i>=0; i--){
+        this.removeSpring(springs[i]);
+    }
+
+    // Remove all contact materials
+    var cms = this.contactMaterials;
+    for(var i=cms.length-1; i>=0; i--){
+        this.removeContactMaterial(cms[i]);
+    }
+
+    World.apply(this);
+};
+
+/**
+ * Get a copy of this World instance
+ * @method clone
+ * @return {World}
+ */
+World.prototype.clone = function(){
+    var world = new World();
+    world.fromJSON(this.toJSON());
+    return world;
+};
+
+var hitTest_tmp1 = vec2.create(),
+    hitTest_zero = vec2.fromValues(0,0),
+    hitTest_tmp2 = vec2.fromValues(0,0);
+
+/**
+ * Test if a world point overlaps bodies
+ * @method hitTest
+ * @param  {Array}  worldPoint  Point to use for intersection tests
+ * @param  {Array}  bodies      A list of objects to check for intersection
+ * @param  {Number} precision   Used for matching against particles and lines. Adds some margin to these infinitesimal objects.
+ * @return {Array}              Array of bodies that overlap the point
+ */
+World.prototype.hitTest = function(worldPoint,bodies,precision){
+    precision = precision || 0;
+
+    // Create a dummy particle body with a particle shape to test against the bodies
+    var pb = new Body({ position:worldPoint }),
+        ps = new Particle(),
+        px = worldPoint,
+        pa = 0,
+        x = hitTest_tmp1,
+        zero = hitTest_zero,
+        tmp = hitTest_tmp2;
+    pb.addShape(ps);
+
+    var n = this.narrowphase,
+        result = [];
+
+    // Check bodies
+    for(var i=0, N=bodies.length; i!==N; i++){
+        var b = bodies[i];
+        for(var j=0, NS=b.shapes.length; j!==NS; j++){
+            var s = b.shapes[j],
+                offset = b.shapeOffsets[j] || zero,
+                angle = b.shapeAngles[j] || 0.0;
+
+            // Get shape world position + angle
+            vec2.rotate(x, offset, b.angle);
+            vec2.add(x, x, b.position);
+            var a = angle + b.angle;
+
+            if( (s instanceof Circle    && n.circleParticle  (b,s,x,a,     pb,ps,px,pa, true)) ||
+                (s instanceof Convex    && n.particleConvex  (pb,ps,px,pa, b,s,x,a,     true)) ||
+                (s instanceof Plane     && n.particlePlane   (pb,ps,px,pa, b,s,x,a,     true)) ||
+                (s instanceof Capsule   && n.particleCapsule (pb,ps,px,pa, b,s,x,a,     true)) ||
+                (s instanceof Particle  && vec2.squaredLength(vec2.sub(tmp,x,worldPoint)) < precision*precision)
+                ){
+                result.push(b);
+            }
+        }
+    }
+
+    return result;
+};
+
+/**
+ * Sets the Equation parameters for all constraints and contact materials.
+ * @method setGlobalEquationParameters
+ * @param {object} [parameters]
+ * @param {Number} [parameters.relaxation]
+ * @param {Number} [parameters.stiffness]
+ */
+World.prototype.setGlobalEquationParameters = function(parameters){
+    parameters = parameters || {};
+
+    // Set for all constraints
+    for(var i=0; i !== this.constraints.length; i++){
+        var c = this.constraints[i];
+        for(var j=0; j !== c.equations.length; j++){
+            var eq = c.equations[j];
+            if(typeof(parameters.stiffness) !== "undefined"){
+                eq.stiffness = parameters.stiffness;
+            }
+            if(typeof(parameters.relaxation) !== "undefined"){
+                eq.relaxation = parameters.relaxation;
+            }
+            eq.needsUpdate = true;
+        }
+    }
+
+    // Set for all contact materials
+    for(var i=0; i !== this.contactMaterials.length; i++){
+        var c = this.contactMaterials[i];
+        if(typeof(parameters.stiffness) !== "undefined"){
+            c.stiffness = parameters.stiffness;
+            c.frictionStiffness = parameters.stiffness;
+        }
+        if(typeof(parameters.relaxation) !== "undefined"){
+            c.relaxation = parameters.relaxation;
+            c.frictionRelaxation = parameters.relaxation;
+        }
+    }
+
+    // Set for default contact material
+    var c = this.defaultContactMaterial;
+    if(typeof(parameters.stiffness) !== "undefined"){
+        c.stiffness = parameters.stiffness;
+        c.frictionStiffness = parameters.stiffness;
+    }
+    if(typeof(parameters.relaxation) !== "undefined"){
+        c.relaxation = parameters.relaxation;
+        c.frictionRelaxation = parameters.relaxation;
+    }
+};
+
+/**
+ * Set the stiffness for all equations and contact materials.
+ * @method setGlobalStiffness
+ * @param {Number} stiffness
+ */
+World.prototype.setGlobalStiffness = function(stiffness){
+    this.setGlobalEquationParameters({
+        stiffness: stiffness
+    });
+};
+
+/**
+ * Set the relaxation for all equations and contact materials.
+ * @method setGlobalRelaxation
+ * @param {Number} relaxation
+ */
+World.prototype.setGlobalRelaxation = function(relaxation){
+    this.setGlobalEquationParameters({
+        relaxation: relaxation
+    });
+};
+
+var tmpRay = new Ray();
+
+/**
+ * Ray cast against all bodies. The provided callback will be executed for each hit with a RaycastResult as single argument.
+ * @method raycastAll
+ * @param  {Vec3} from
+ * @param  {Vec3} to
+ * @param  {Object} options
+ * @param  {number} [options.collisionMask=-1]
+ * @param  {number} [options.collisionGroup=-1]
+ * @param  {boolean} [options.skipBackfaces=false]
+ * @param  {boolean} [options.checkCollisionResponse=true]
+ * @param  {Function} callback
+ * @return {boolean} True if any body was hit.
+ */
+World.prototype.raycastAll = function(from, to, options, callback){
+    options.mode = Ray.ALL;
+    options.from = from;
+    options.to = to;
+    options.callback = callback;
+    return tmpRay.intersectWorld(this, options);
+};
+
+/**
+ * Ray cast, and stop at the first result. Note that the order is random - but the method is fast.
+ * @method raycastAny
+ * @param  {Vec3} from
+ * @param  {Vec3} to
+ * @param  {Object} options
+ * @param  {number} [options.collisionMask=-1]
+ * @param  {number} [options.collisionGroup=-1]
+ * @param  {boolean} [options.skipBackfaces=false]
+ * @param  {boolean} [options.checkCollisionResponse=true]
+ * @param  {RaycastResult} result
+ * @return {boolean} True if any body was hit.
+ */
+World.prototype.raycastAny = function(from, to, options, result){
+    options.mode = Ray.ANY;
+    options.from = from;
+    options.to = to;
+    options.result = result;
+    return tmpRay.intersectWorld(this, options);
+};
+
+/**
+ * Ray cast, and return information of the closest hit.
+ * @method raycastClosest
+ * @param  {Vec3} from
+ * @param  {Vec3} to
+ * @param  {Object} options
+ * @param  {number} [options.collisionMask=-1]
+ * @param  {number} [options.collisionGroup=-1]
+ * @param  {boolean} [options.skipBackfaces=false]
+ * @param  {boolean} [options.checkCollisionResponse=true]
+ * @param  {RaycastResult} result
+ * @return {boolean} True if any body was hit.
+ */
+World.prototype.raycastClosest = function(from, to, options, result){
+    options.mode = Ray.CLOSEST;
+    options.from = from;
+    options.to = to;
+    options.result = result;
+    return tmpRay.intersectWorld(this, options);
+};
+}).call(this,_dereq_("Zbi7gb"),typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {},_dereq_("buffer").Buffer,arguments[3],arguments[4],arguments[5],arguments[6],"/world\\World.js","/world")
+},{"../../package.json":10,"../collision/Broadphase":12,"../collision/NaiveBroadphase":14,"../collision/Narrowphase":15,"../collision/Ray":16,"../collision/SAPBroadphase":18,"../constraints/Constraint":19,"../constraints/DistanceConstraint":20,"../constraints/GearConstraint":21,"../constraints/LockConstraint":22,"../constraints/PrismaticConstraint":23,"../constraints/RevoluteConstraint":24,"../events/EventEmitter":31,"../material/ContactMaterial":32,"../material/Material":33,"../math/vec2":35,"../objects/Body":36,"../objects/LinearSpring":37,"../objects/RotationalSpring":38,"../shapes/Capsule":41,"../shapes/Circle":42,"../shapes/Convex":43,"../shapes/Line":45,"../shapes/Particle":46,"../shapes/Plane":47,"../shapes/Rectangle":48,"../shapes/Shape":49,"../solver/GSSolver":50,"../solver/Solver":51,"../utils/OverlapKeeper":52,"../utils/Utils":54,"./IslandManager":56,"Zbi7gb":4,"buffer":1}]},{},[40])
+(40)
+});
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+//  Add an extra properties to p2 that we need
+p2.Body.prototype.parent = null;
+p2.Spring.prototype.parent = null;
+
+/**
+* This is your main access to the P2 Physics World.
+* From here you can create materials, listen for events and add bodies into the physics simulation.
+* 
+* @class Phaser.Physics.P2
+* @constructor
+* @param {Phaser.Game} game - Reference to the current game instance.
+* @param {object} [config] - Physics configuration object passed in from the game constructor.
+*/
+Phaser.Physics.P2 = function (game, config) {
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = game;
+
+    if (typeof config === 'undefined')
+    {
+        config = { gravity: [0, 0], broadphase: new p2.SAPBroadphase() };
+    }
+    else
+    {
+        if (!config.hasOwnProperty('gravity'))
+        {
+            config.gravity = [0, 0];
+        }
+
+        if (!config.hasOwnProperty('broadphase'))
+        {
+            config.broadphase = new p2.SAPBroadphase();
+        }
+    }
+
+    /**
+    * @property {object} config - The p2 World configuration object.
+    * @protected
+    */
+    this.config = config;
+
+    /**
+    * @property {p2.World} world - The p2 World in which the simulation is run.
+    * @protected
+    */
+    this.world = new p2.World(this.config);
+
+    /**
+    * @property {number} frameRate - The frame rate the world will be stepped at. Defaults to 1 / 60, but you can change here. Also see useElapsedTime property.
+    * @default
+    */
+    this.frameRate = 1 / 60;
+
+    /**
+    * @property {boolean} useElapsedTime - If true the frameRate value will be ignored and instead p2 will step with the value of Game.Time.physicsElapsed, which is a delta time value.
+    * @default
+    */
+    this.useElapsedTime = false;
+
+    /**
+    * @property {boolean} paused - The paused state of the P2 World.
+    * @default
+    */
+    this.paused = false;
+
+    /**
+    * @property {array<Phaser.Physics.P2.Material>} materials - A local array of all created Materials.
+    * @protected
+    */
+    this.materials = [];
+
+    /**
+    * @property {Phaser.Physics.P2.InversePointProxy} gravity - The gravity applied to all bodies each step.
+    */
+    this.gravity = new Phaser.Physics.P2.InversePointProxy(this, this.world.gravity);
+
+    /**
+    * @property {object} walls - An object containing the 4 wall bodies that bound the physics world.
+    */
+    this.walls = { left: null, right: null, top: null, bottom: null };
+
+    /**
+    * @property {Phaser.Signal} onBodyAdded - Dispatched when a new Body is added to the World.
+    */
+    this.onBodyAdded = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onBodyRemoved - Dispatched when a Body is removed from the World.
+    */
+    this.onBodyRemoved = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onSpringAdded - Dispatched when a new Spring is added to the World.
+    */
+    this.onSpringAdded = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onSpringRemoved - Dispatched when a Spring is removed from the World.
+    */
+    this.onSpringRemoved = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onConstraintAdded - Dispatched when a new Constraint is added to the World.
+    */
+    this.onConstraintAdded = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onConstraintRemoved - Dispatched when a Constraint is removed from the World.
+    */
+    this.onConstraintRemoved = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onContactMaterialAdded - Dispatched when a new ContactMaterial is added to the World.
+    */
+    this.onContactMaterialAdded = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onContactMaterialRemoved - Dispatched when a ContactMaterial is removed from the World.
+    */
+    this.onContactMaterialRemoved = new Phaser.Signal();
+
+    /**
+    * @property {function} postBroadphaseCallback - A postBroadphase callback.
+    */
+    this.postBroadphaseCallback = null;
+
+    /**
+    * @property {object} callbackContext - The context under which the callbacks are fired.
+    */
+    this.callbackContext = null;
+
+    /**
+    * @property {Phaser.Signal} onBeginContact - Dispatched when a first contact is created between two bodies. This event is fired before the step has been done.
+    */
+    this.onBeginContact = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onEndContact - Dispatched when final contact occurs between two bodies. This event is fired before the step has been done.
+    */
+    this.onEndContact = new Phaser.Signal();
+
+    //  Pixel to meter function overrides
+    if (config.hasOwnProperty('mpx') && config.hasOwnProperty('pxm') && config.hasOwnProperty('mpxi') && config.hasOwnProperty('pxmi'))
+    {
+        this.mpx = config.mpx;
+        this.mpxi = config.mpxi;
+        this.pxm = config.pxm;
+        this.pxmi = config.pxmi;
+    }
+
+    //  Hook into the World events
+    this.world.on("beginContact", this.beginContactHandler, this);
+    this.world.on("endContact", this.endContactHandler, this);
+
+    /**
+    * @property {array} collisionGroups - An array containing the collision groups that have been defined in the World.
+    */
+    this.collisionGroups = [];
+
+    /**
+    * @property {Phaser.Physics.P2.CollisionGroup} nothingCollisionGroup - A default collision group.
+    */
+    this.nothingCollisionGroup = new Phaser.Physics.P2.CollisionGroup(1);
+
+    /**
+    * @property {Phaser.Physics.P2.CollisionGroup} boundsCollisionGroup - A default collision group.
+    */
+    this.boundsCollisionGroup = new Phaser.Physics.P2.CollisionGroup(2);
+
+    /**
+    * @property {Phaser.Physics.P2.CollisionGroup} everythingCollisionGroup - A default collision group.
+    */
+    this.everythingCollisionGroup = new Phaser.Physics.P2.CollisionGroup(2147483648);
+
+    /**
+    * @property {array} boundsCollidesWith - An array of the bodies the world bounds collides with.
+    */
+    this.boundsCollidesWith = [];
+
+    /**
+    * @property {array} _toRemove - Internal var used to hold references to bodies to remove from the world on the next step.
+    * @private
+    */
+    this._toRemove = [];
+
+    /**
+    * @property {number} _collisionGroupID - Internal var.
+    * @private
+    */
+    this._collisionGroupID = 2;
+
+    /**
+    * @property {boolean} _boundsLeft - Internal var that keeps track of world bounds settings.
+    * @private
+    */
+    this._boundsLeft = true;
+
+    /**
+    * @property {boolean} _boundsRight - Internal var that keeps track of world bounds settings.
+    * @private
+    */
+    this._boundsRight = true;
+
+    /**
+    * @property {boolean} _boundsTop - Internal var that keeps track of world bounds settings.
+    * @private
+    */
+    this._boundsTop = true;
+
+    /**
+    * @property {boolean} _boundsBottom - Internal var that keeps track of world bounds settings.
+    * @private
+    */
+    this._boundsBottom = true;
+
+    /**
+    * @property {boolean} _boundsOwnGroup - Internal var that keeps track of world bounds settings.
+    * @private
+    */
+    this._boundsOwnGroup = false;
+
+    //  By default we want everything colliding with everything
+    this.setBoundsToWorld(true, true, true, true, false);
+
+};
+
+Phaser.Physics.P2.prototype = {
+
+    /**
+    * This will add a P2 Physics body into the removal list for the next step.
+    *
+    * @method Phaser.Physics.P2#removeBodyNextStep
+    * @param {Phaser.Physics.P2.Body} body - The body to remove at the start of the next step.
+    */
+    removeBodyNextStep: function (body) {
+
+        this._toRemove.push(body);
+
+    },
+
+    /**
+    * Called at the start of the core update loop. Purges flagged bodies from the world.
+    *
+    * @method Phaser.Physics.P2#preUpdate
+    */
+    preUpdate: function () {
+
+        var i = this._toRemove.length;
+
+        while (i--)
+        {
+            this.removeBody(this._toRemove[i]);
+        }
+
+        this._toRemove.length = 0;
+
+    },
+
+    /**
+    * This will create a P2 Physics body on the given game object or array of game objects.
+    * A game object can only have 1 physics body active at any one time, and it can't be changed until the object is destroyed.
+    * Note: When the game object is enabled for P2 physics it has its anchor x/y set to 0.5 so it becomes centered.
+    *
+    * @method Phaser.Physics.P2#enable
+    * @param {object|array|Phaser.Group} object - The game object to create the physics body on. Can also be an array or Group of objects, a body will be created on every child that has a `body` property.
+    * @param {boolean} [debug=false] - Create a debug object to go with this body?
+    * @param {boolean} [children=true] - Should a body be created on all children of this object? If true it will recurse down the display list as far as it can go.
+    */
+    enable: function (object, debug, children) {
+
+        if (typeof debug === 'undefined') { debug = false; }
+        if (typeof children === 'undefined') { children = true; }
+
+        var i = 1;
+
+        if (Array.isArray(object))
+        {
+            i = object.length;
+
+            while (i--)
+            {
+                if (object[i] instanceof Phaser.Group)
+                {
+                    //  If it's a Group then we do it on the children regardless
+                    this.enable(object[i].children, debug, children);
+                }
+                else
+                {
+                    this.enableBody(object[i], debug);
+
+                    if (children && object[i].hasOwnProperty('children') && object[i].children.length > 0)
+                    {
+                        this.enable(object[i], debug, true);
+                    }
+                }
+            }
+        }
+        else
+        {
+            if (object instanceof Phaser.Group)
+            {
+                //  If it's a Group then we do it on the children regardless
+                this.enable(object.children, debug, children);
+            }
+            else
+            {
+                this.enableBody(object, debug);
+
+                if (children && object.hasOwnProperty('children') && object.children.length > 0)
+                {
+                    this.enable(object.children, debug, true);
+                }
+            }
+        }
+
+    },
+
+    /**
+    * Creates a P2 Physics body on the given game object.
+    * A game object can only have 1 physics body active at any one time, and it can't be changed until the body is nulled.
+    *
+    * @method Phaser.Physics.P2#enableBody
+    * @param {object} object - The game object to create the physics body on. A body will only be created if this object has a null `body` property.
+    * @param {boolean} debug - Create a debug object to go with this body?
+    */
+    enableBody: function (object, debug) {
+
+        if (object.hasOwnProperty('body') && object.body === null)
+        {
+            object.body = new Phaser.Physics.P2.Body(this.game, object, object.x, object.y, 1);
+            object.body.debug = debug;
+            object.anchor.set(0.5);
+        }
+
+    },
+
+    /**
+    * Impact event handling is disabled by default. Enable it before any impact events will be dispatched.
+    * In a busy world hundreds of impact events can be generated every step, so only enable this if you cannot do what you need via beginContact or collision masks.
+    *
+    * @method Phaser.Physics.P2#setImpactEvents
+    * @param {boolean} state - Set to true to enable impact events, or false to disable.
+    */
+    setImpactEvents: function (state) {
+
+        if (state)
+        {
+            this.world.on("impact", this.impactHandler, this);
+        }
+        else
+        {
+            this.world.off("impact", this.impactHandler, this);
+        }
+
+    },
+
+    /**
+    * Sets a callback to be fired after the Broadphase has collected collision pairs in the world.
+    * Just because a pair exists it doesn't mean they *will* collide, just that they potentially could do.
+    * If your calback returns `false` the pair will be removed from the narrowphase. This will stop them testing for collision this step.
+    * Returning `true` from the callback will ensure they are checked in the narrowphase.
+    *
+    * @method Phaser.Physics.P2#setPostBroadphaseCallback
+    * @param {function} callback - The callback that will receive the postBroadphase event data. It must return a boolean. Set to null to disable an existing callback.
+    * @param {object} context - The context under which the callback will be fired.
+    */
+    setPostBroadphaseCallback: function (callback, context) {
+
+        this.postBroadphaseCallback = callback;
+        this.callbackContext = context;
+
+        if (callback !== null)
+        {
+            this.world.on("postBroadphase", this.postBroadphaseHandler, this);
+        }
+        else
+        {
+            this.world.off("postBroadphase", this.postBroadphaseHandler, this);
+        }
+
+    },
+
+    /**
+    * Internal handler for the postBroadphase event.
+    *
+    * @method Phaser.Physics.P2#postBroadphaseHandler
+    * @private
+    * @param {object} event - The event data.
+    */
+    postBroadphaseHandler: function (event) {
+
+        if (!this.postBroadphaseCallback || event.pairs.length === 0)
+        {
+            return;
+        }
+
+        for (var i = event.pairs.length - 2; i >= 0; i -= 2)
+        {
+            if (event.pairs[i].parent && event.pairs[i+1].parent && !this.postBroadphaseCallback.call(this.callbackContext, event.pairs[i].parent, event.pairs[i+1].parent))
+            {
+                event.pairs.splice(i, 2);
+            }
+        }
+
+    },
+
+    /**
+    * Handles a p2 impact event.
+    *
+    * @method Phaser.Physics.P2#impactHandler
+    * @private
+    * @param {object} event - The event data.
+    */
+    impactHandler: function (event) {
+
+        if (event.bodyA.parent && event.bodyB.parent)
+        {
+            //  Body vs. Body callbacks
+            var a = event.bodyA.parent;
+            var b = event.bodyB.parent;
+
+            if (a._bodyCallbacks[event.bodyB.id])
+            {
+                a._bodyCallbacks[event.bodyB.id].call(a._bodyCallbackContext[event.bodyB.id], a, b, event.shapeA, event.shapeB);
+            }
+
+            if (b._bodyCallbacks[event.bodyA.id])
+            {
+                b._bodyCallbacks[event.bodyA.id].call(b._bodyCallbackContext[event.bodyA.id], b, a, event.shapeB, event.shapeA);
+            }
+
+            //  Body vs. Group callbacks
+            if (a._groupCallbacks[event.shapeB.collisionGroup])
+            {
+                a._groupCallbacks[event.shapeB.collisionGroup].call(a._groupCallbackContext[event.shapeB.collisionGroup], a, b, event.shapeA, event.shapeB);
+            }
+
+            if (b._groupCallbacks[event.shapeA.collisionGroup])
+            {
+                b._groupCallbacks[event.shapeA.collisionGroup].call(b._groupCallbackContext[event.shapeA.collisionGroup], b, a, event.shapeB, event.shapeA);
+            }
+        }
+
+    },
+
+    /**
+    * Handles a p2 begin contact event.
+    *
+    * @method Phaser.Physics.P2#beginContactHandler
+    * @param {object} event - The event data.
+    */
+    beginContactHandler: function (event) {
+
+        this.onBeginContact.dispatch(event.bodyA, event.bodyB, event.shapeA, event.shapeB, event.contactEquations);
+
+        if (event.bodyA.parent)
+        {
+            event.bodyA.parent.onBeginContact.dispatch(event.bodyB.parent, event.shapeA, event.shapeB, event.contactEquations);
+        }
+
+        if (event.bodyB.parent)
+        {
+            event.bodyB.parent.onBeginContact.dispatch(event.bodyA.parent, event.shapeB, event.shapeA, event.contactEquations);
+        }
+
+    },
+
+    /**
+    * Handles a p2 end contact event.
+    *
+    * @method Phaser.Physics.P2#endContactHandler
+    * @param {object} event - The event data.
+    */
+    endContactHandler: function (event) {
+
+        this.onEndContact.dispatch(event.bodyA, event.bodyB, event.shapeA, event.shapeB);
+
+        if (event.bodyA.parent)
+        {
+            event.bodyA.parent.onEndContact.dispatch(event.bodyB.parent, event.shapeA, event.shapeB);
+        }
+
+        if (event.bodyB.parent)
+        {
+            event.bodyB.parent.onEndContact.dispatch(event.bodyA.parent, event.shapeB, event.shapeA);
+        }
+
+    },
+
+    /**
+    * Sets the bounds of the Physics world to match the Game.World dimensions.
+    * You can optionally set which 'walls' to create: left, right, top or bottom.
+    *
+    * @method Phaser.Physics#setBoundsToWorld
+    * @param {boolean} [left=true] - If true will create the left bounds wall.
+    * @param {boolean} [right=true] - If true will create the right bounds wall.
+    * @param {boolean} [top=true] - If true will create the top bounds wall.
+    * @param {boolean} [bottom=true] - If true will create the bottom bounds wall.
+    * @param {boolean} [setCollisionGroup=true] - If true the Bounds will be set to use its own Collision Group.
+    */
+    setBoundsToWorld: function (left, right, top, bottom, setCollisionGroup) {
+
+        this.setBounds(this.game.world.bounds.x, this.game.world.bounds.y, this.game.world.bounds.width, this.game.world.bounds.height, left, right, top, bottom, setCollisionGroup);
+
+    },
+
+    /**
+    * Sets the given material against the 4 bounds of this World.
+    *
+    * @method Phaser.Physics#setWorldMaterial
+    * @param {Phaser.Physics.P2.Material} material - The material to set.
+    * @param {boolean} [left=true] - If true will set the material on the left bounds wall.
+    * @param {boolean} [right=true] - If true will set the material on the right bounds wall.
+    * @param {boolean} [top=true] - If true will set the material on the top bounds wall.
+    * @param {boolean} [bottom=true] - If true will set the material on the bottom bounds wall.
+    */
+    setWorldMaterial: function (material, left, right, top, bottom) {
+
+        if (typeof left === 'undefined') { left = true; }
+        if (typeof right === 'undefined') { right = true; }
+        if (typeof top === 'undefined') { top = true; }
+        if (typeof bottom === 'undefined') { bottom = true; }
+
+        if (left && this.walls.left)
+        {
+            this.walls.left.shapes[0].material = material;
+        }
+
+        if (right && this.walls.right)
+        {
+            this.walls.right.shapes[0].material = material;
+        }
+
+        if (top && this.walls.top)
+        {
+            this.walls.top.shapes[0].material = material;
+        }
+
+        if (bottom && this.walls.bottom)
+        {
+            this.walls.bottom.shapes[0].material = material;
+        }
+
+    },
+
+    /**
+    * By default the World will be set to collide everything with everything. The bounds of the world is a Body with 4 shapes, one for each face.
+    * If you start to use your own collision groups then your objects will no longer collide with the bounds.
+    * To fix this you need to adjust the bounds to use its own collision group first BEFORE changing your Sprites collision group.
+    *
+    * @method Phaser.Physics.P2#updateBoundsCollisionGroup
+    * @param {boolean} [setCollisionGroup=true] - If true the Bounds will be set to use its own Collision Group.
+    */
+    updateBoundsCollisionGroup: function (setCollisionGroup) {
+
+        var mask = this.everythingCollisionGroup.mask;
+
+        if (typeof setCollisionGroup === 'undefined') { mask = this.boundsCollisionGroup.mask; }
+
+        if (this.walls.left)
+        {
+            this.walls.left.shapes[0].collisionGroup = mask;
+        }
+
+        if (this.walls.right)
+        {
+            this.walls.right.shapes[0].collisionGroup = mask;
+        }
+
+        if (this.walls.top)
+        {
+            this.walls.top.shapes[0].collisionGroup = mask;
+        }
+
+        if (this.walls.bottom)
+        {
+            this.walls.bottom.shapes[0].collisionGroup = mask;
+        }
+
+    },
+
+    /**
+    * Sets the bounds of the Physics world to match the given world pixel dimensions.
+    * You can optionally set which 'walls' to create: left, right, top or bottom.
+    * If none of the walls are given it will default to use the walls settings it had previously.
+    * I.e. if you previously told it to not have the left or right walls, and you then adjust the world size
+    * the newly created bounds will also not have the left and right walls.
+    * Explicitly state them in the parameters to override this.
+    *
+    * @method Phaser.Physics.P2#setBounds
+    * @param {number} x - The x coordinate of the top-left corner of the bounds.
+    * @param {number} y - The y coordinate of the top-left corner of the bounds.
+    * @param {number} width - The width of the bounds.
+    * @param {number} height - The height of the bounds.
+    * @param {boolean} [left=true] - If true will create the left bounds wall.
+    * @param {boolean} [right=true] - If true will create the right bounds wall.
+    * @param {boolean} [top=true] - If true will create the top bounds wall.
+    * @param {boolean} [bottom=true] - If true will create the bottom bounds wall.
+    * @param {boolean} [setCollisionGroup=true] - If true the Bounds will be set to use its own Collision Group.
+    */
+    setBounds: function (x, y, width, height, left, right, top, bottom, setCollisionGroup) {
+
+        if (typeof left === 'undefined') { left = this._boundsLeft; }
+        if (typeof right === 'undefined') { right = this._boundsRight; }
+        if (typeof top === 'undefined') { top = this._boundsTop; }
+        if (typeof bottom === 'undefined') { bottom = this._boundsBottom; }
+        if (typeof setCollisionGroup === 'undefined') { setCollisionGroup = this._boundsOwnGroup; }
+
+        if (this.walls.left)
+        {
+            this.world.removeBody(this.walls.left);
+        }
+
+        if (this.walls.right)
+        {
+            this.world.removeBody(this.walls.right);
+        }
+
+        if (this.walls.top)
+        {
+            this.world.removeBody(this.walls.top);
+        }
+
+        if (this.walls.bottom)
+        {
+            this.world.removeBody(this.walls.bottom);
+        }
+
+        if (left)
+        {
+            this.walls.left = new p2.Body({ mass: 0, position: [ this.pxmi(x), this.pxmi(y) ], angle: 1.5707963267948966 });
+            this.walls.left.addShape(new p2.Plane());
+
+            if (setCollisionGroup)
+            {
+                this.walls.left.shapes[0].collisionGroup = this.boundsCollisionGroup.mask;
+            }
+
+            this.world.addBody(this.walls.left);
+        }
+
+        if (right)
+        {
+            this.walls.right = new p2.Body({ mass: 0, position: [ this.pxmi(x + width), this.pxmi(y) ], angle: -1.5707963267948966 });
+            this.walls.right.addShape(new p2.Plane());
+
+            if (setCollisionGroup)
+            {
+                this.walls.right.shapes[0].collisionGroup = this.boundsCollisionGroup.mask;
+            }
+
+            this.world.addBody(this.walls.right);
+        }
+
+        if (top)
+        {
+            this.walls.top = new p2.Body({ mass: 0, position: [ this.pxmi(x), this.pxmi(y) ], angle: -3.141592653589793 });
+            this.walls.top.addShape(new p2.Plane());
+
+            if (setCollisionGroup)
+            {
+                this.walls.top.shapes[0].collisionGroup = this.boundsCollisionGroup.mask;
+            }
+
+            this.world.addBody(this.walls.top);
+        }
+
+        if (bottom)
+        {
+            this.walls.bottom = new p2.Body({ mass: 0, position: [ this.pxmi(x), this.pxmi(y + height) ] });
+            this.walls.bottom.addShape(new p2.Plane());
+
+            if (setCollisionGroup)
+            {
+                this.walls.bottom.shapes[0].collisionGroup = this.boundsCollisionGroup.mask;
+            }
+
+            this.world.addBody(this.walls.bottom);
+        }
+
+        //  Remember the bounds settings in case they change later on via World.setBounds
+        this._boundsLeft = left;
+        this._boundsRight = right;
+        this._boundsTop = top;
+        this._boundsBottom = bottom;
+        this._boundsOwnGroup = setCollisionGroup;
+
+    },
+
+    /**
+    * Pauses the P2 World independent of the game pause state.
+    *
+    * @method Phaser.Physics.P2#pause
+    */
+    pause: function() {
+
+        this.paused = true;
+
+    },
+    
+    /**
+    * Resumes a paused P2 World.
+    *
+    * @method Phaser.Physics.P2#resume
+    */
+    resume: function() {
+
+        this.paused = false;
+
+    },
+
+    /**
+    * Internal P2 update loop.
+    *
+    * @method Phaser.Physics.P2#update
+    */
+    update: function () {
+
+        // Do nothing if the physics engine was paused before
+        if (this.paused)
+        {
+            return;
+        }
+
+        if (this.useElapsedTime)
+        {
+            this.world.step(this.game.time.physicsElapsed);
+        }
+        else
+        {
+            this.world.step(this.frameRate);
+        }
+
+    },
+
+    /**
+    * Called by Phaser.Physics when a State swap occurs.
+    * Starts the begin and end Contact listeners again.
+    *
+    * @method Phaser.Physics.P2#reset
+    */
+    reset: function () {
+
+        this.world.on("beginContact", this.beginContactHandler, this);
+        this.world.on("endContact", this.endContactHandler, this);
+
+        this.nothingCollisionGroup = new Phaser.Physics.P2.CollisionGroup(1);
+        this.boundsCollisionGroup = new Phaser.Physics.P2.CollisionGroup(2);
+        this.everythingCollisionGroup = new Phaser.Physics.P2.CollisionGroup(2147483648);
+
+        this._collisionGroupID = 2;
+
+        this.setBoundsToWorld(true, true, true, true, false);
+
+    },
+
+    /**
+    * Clears all bodies from the simulation, resets callbacks and resets the collision bitmask.
+    * 
+    * The P2 world is also cleared:
+    * 
+    * * Removes all solver equations
+    * * Removes all constraints
+    * * Removes all bodies
+    * * Removes all springs
+    * * Removes all contact materials
+    * 
+    * This is called automatically when you switch state.
+    *
+    * @method Phaser.Physics.P2#clear
+    */
+    clear: function () {
+
+        this.world.time = 0;
+        this.world.fixedStepTime = 0;
+
+        // Remove all solver equations
+        if (this.world.solver && this.world.solver.equations.length)
+        {
+            this.world.solver.removeAllEquations();
+        }
+
+        // Remove all constraints
+        var cs = this.world.constraints;
+
+        for (var i = cs.length - 1; i >= 0; i--)
+        {
+            this.world.removeConstraint(cs[i]);
+        }
+
+        // Remove all bodies
+        var bodies = this.world.bodies;
+
+        for (var i = bodies.length - 1; i >= 0; i--)
+        {
+            this.world.removeBody(bodies[i]);
+        }
+
+        // Remove all springs
+        var springs = this.world.springs;
+
+        for (var i = springs.length - 1; i >= 0; i--)
+        {
+            this.world.removeSpring(springs[i]);
+        }
+
+        // Remove all contact materials
+        var cms = this.world.contactMaterials;
+
+        for (var i = cms.length - 1; i >= 0; i--)
+        {
+            this.world.removeContactMaterial(cms[i]);
+        }
+
+        this.world.off("beginContact", this.beginContactHandler, this);
+        this.world.off("endContact", this.endContactHandler, this);
+
+        this.postBroadphaseCallback = null;
+        this.callbackContext = null;
+        this.impactCallback = null;
+
+        this.collisionGroups = [];
+        this._toRemove = [];
+        this.boundsCollidesWith = [];
+
+    },
+
+    /**
+    * Clears all bodies from the simulation and unlinks World from Game. Should only be called on game shutdown. Call `clear` on a State change.
+    *
+    * @method Phaser.Physics.P2#destroy
+    */
+    destroy: function () {
+
+        this.clear();
+
+        this.game = null;
+
+    },
+
+    /**
+    * Add a body to the world.
+    *
+    * @method Phaser.Physics.P2#addBody
+    * @param {Phaser.Physics.P2.Body} body - The Body to add to the World.
+    * @return {boolean} True if the Body was added successfully, otherwise false.
+    */
+    addBody: function (body) {
+
+        if (body.data.world)
+        {
+            return false;
+        }
+        else
+        {
+            this.world.addBody(body.data);
+
+            this.onBodyAdded.dispatch(body);
+
+            return true;
+        }
+
+    },
+
+    /**
+    * Removes a body from the world. This will silently fail if the body wasn't part of the world to begin with.
+    *
+    * @method Phaser.Physics.P2#removeBody
+    * @param {Phaser.Physics.P2.Body} body - The Body to remove from the World.
+    * @return {Phaser.Physics.P2.Body} The Body that was removed.
+    */
+    removeBody: function (body) {
+
+        if (body.data.world == this.world)
+        {
+            this.world.removeBody(body.data);
+
+            this.onBodyRemoved.dispatch(body);
+        }
+
+        return body;
+
+    },
+
+    /**
+    * Adds a Spring to the world.
+    *
+    * @method Phaser.Physics.P2#addSpring
+    * @param {Phaser.Physics.P2.Spring|p2.LinearSpring|p2.RotationalSpring} spring - The Spring to add to the World.
+    * @return {Phaser.Physics.P2.Spring} The Spring that was added.
+    */
+    addSpring: function (spring) {
+
+        if (spring instanceof Phaser.Physics.P2.Spring || spring instanceof Phaser.Physics.P2.RotationalSpring)
+        {
+            this.world.addSpring(spring.data);
+        }
+        else
+        {
+            this.world.addSpring(spring);
+        }
+
+        this.onSpringAdded.dispatch(spring);
+
+        return spring;
+
+    },
+
+    /**
+    * Removes a Spring from the world.
+    *
+    * @method Phaser.Physics.P2#removeSpring
+    * @param {Phaser.Physics.P2.Spring} spring - The Spring to remove from the World.
+    * @return {Phaser.Physics.P2.Spring} The Spring that was removed.
+    */
+    removeSpring: function (spring) {
+
+        if (spring instanceof Phaser.Physics.P2.Spring || spring instanceof Phaser.Physics.P2.RotationalSpring)
+        {
+            this.world.removeSpring(spring.data);
+        }
+        else
+        {
+            this.world.removeSpring(spring);
+        }
+
+        this.onSpringRemoved.dispatch(spring);
+
+        return spring;
+
+    },
+
+    /**
+    * Creates a constraint that tries to keep the distance between two bodies constant.
+    *
+    * @method Phaser.Physics.P2#createDistanceConstraint
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyA - First connected body.
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyB - Second connected body.
+    * @param {number} distance - The distance to keep between the bodies.
+    * @param {Array} [localAnchorA] - The anchor point for bodyA, defined locally in bodyA frame. Defaults to [0,0].
+    * @param {Array} [localAnchorB] - The anchor point for bodyB, defined locally in bodyB frame. Defaults to [0,0].
+    * @param {number} [maxForce] - The maximum force that should be applied to constrain the bodies.
+    * @return {Phaser.Physics.P2.DistanceConstraint} The constraint
+    */
+    createDistanceConstraint: function (bodyA, bodyB, distance, localAnchorA, localAnchorB, maxForce) {
+
+        bodyA = this.getBody(bodyA);
+        bodyB = this.getBody(bodyB);
+
+        if (!bodyA || !bodyB)
+        {
+            console.warn('Cannot create Constraint, invalid body objects given');
+        }
+        else
+        {
+            return this.addConstraint(new Phaser.Physics.P2.DistanceConstraint(this, bodyA, bodyB, distance, localAnchorA, localAnchorB, maxForce));
+        }
+
+    },
+
+    /**
+    * Creates a constraint that tries to keep the distance between two bodies constant.
+    *
+    * @method Phaser.Physics.P2#createGearConstraint
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyA - First connected body.
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyB - Second connected body.
+    * @param {number} [angle=0] - The relative angle
+    * @param {number} [ratio=1] - The gear ratio.
+    * @return {Phaser.Physics.P2.GearConstraint} The constraint
+    */
+    createGearConstraint: function (bodyA, bodyB, angle, ratio) {
+
+        bodyA = this.getBody(bodyA);
+        bodyB = this.getBody(bodyB);
+
+        if (!bodyA || !bodyB)
+        {
+            console.warn('Cannot create Constraint, invalid body objects given');
+        }
+        else
+        {
+            return this.addConstraint(new Phaser.Physics.P2.GearConstraint(this, bodyA, bodyB, angle, ratio));
+        }
+
+    },
+
+    /**
+    * Connects two bodies at given offset points, letting them rotate relative to each other around this point.
+    * The pivot points are given in world (pixel) coordinates.
+    *
+    * @method Phaser.Physics.P2#createRevoluteConstraint
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyA - First connected body.
+    * @param {Array} pivotA - The point relative to the center of mass of bodyA which bodyA is constrained to. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyB - Second connected body.
+    * @param {Array} pivotB - The point relative to the center of mass of bodyB which bodyB is constrained to. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+    * @param {number} [maxForce=0] - The maximum force that should be applied to constrain the bodies.
+    * @param {Float32Array} [worldPivot=null] - A pivot point given in world coordinates. If specified, localPivotA and localPivotB are automatically computed from this value.
+    * @return {Phaser.Physics.P2.RevoluteConstraint} The constraint
+    */
+    createRevoluteConstraint: function (bodyA, pivotA, bodyB, pivotB, maxForce, worldPivot) {
+
+        bodyA = this.getBody(bodyA);
+        bodyB = this.getBody(bodyB);
+
+        if (!bodyA || !bodyB)
+        {
+            console.warn('Cannot create Constraint, invalid body objects given');
+        }
+        else
+        {
+            return this.addConstraint(new Phaser.Physics.P2.RevoluteConstraint(this, bodyA, pivotA, bodyB, pivotB, maxForce, worldPivot));
+        }
+
+    },
+
+    /**
+    * Locks the relative position between two bodies.
+    *
+    * @method Phaser.Physics.P2#createLockConstraint
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyA - First connected body.
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyB - Second connected body.
+    * @param {Array} [offset] - The offset of bodyB in bodyA's frame. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+    * @param {number} [angle=0] - The angle of bodyB in bodyA's frame.
+    * @param {number} [maxForce] - The maximum force that should be applied to constrain the bodies.
+    * @return {Phaser.Physics.P2.LockConstraint} The constraint
+    */
+    createLockConstraint: function (bodyA, bodyB, offset, angle, maxForce) {
+
+        bodyA = this.getBody(bodyA);
+        bodyB = this.getBody(bodyB);
+
+        if (!bodyA || !bodyB)
+        {
+            console.warn('Cannot create Constraint, invalid body objects given');
+        }
+        else
+        {
+            return this.addConstraint(new Phaser.Physics.P2.LockConstraint(this, bodyA, bodyB, offset, angle, maxForce));
+        }
+
+    },
+
+    /**
+    * Constraint that only allows bodies to move along a line, relative to each other.
+    * See http://www.iforce2d.net/b2dtut/joints-prismatic
+    *
+    * @method Phaser.Physics.P2#createPrismaticConstraint
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyA - First connected body.
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyB - Second connected body.
+    * @param {boolean} [lockRotation=true] - If set to false, bodyB will be free to rotate around its anchor point.
+    * @param {Array} [anchorA] - Body A's anchor point, defined in its own local frame. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+    * @param {Array} [anchorB] - Body A's anchor point, defined in its own local frame. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+    * @param {Array} [axis] - An axis, defined in body A frame, that body B's anchor point may slide along. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+    * @param {number} [maxForce] - The maximum force that should be applied to constrain the bodies.
+    * @return {Phaser.Physics.P2.PrismaticConstraint} The constraint
+    */
+    createPrismaticConstraint: function (bodyA, bodyB, lockRotation, anchorA, anchorB, axis, maxForce) {
+
+        bodyA = this.getBody(bodyA);
+        bodyB = this.getBody(bodyB);
+
+        if (!bodyA || !bodyB)
+        {
+            console.warn('Cannot create Constraint, invalid body objects given');
+        }
+        else
+        {
+            return this.addConstraint(new Phaser.Physics.P2.PrismaticConstraint(this, bodyA, bodyB, lockRotation, anchorA, anchorB, axis, maxForce));
+        }
+
+    },
+
+    /**
+    * Adds a Constraint to the world.
+    *
+    * @method Phaser.Physics.P2#addConstraint
+    * @param {Phaser.Physics.P2.Constraint} constraint - The Constraint to add to the World.
+    * @return {Phaser.Physics.P2.Constraint} The Constraint that was added.
+    */
+    addConstraint: function (constraint) {
+
+        this.world.addConstraint(constraint);
+
+        this.onConstraintAdded.dispatch(constraint);
+
+        return constraint;
+
+    },
+
+    /**
+    * Removes a Constraint from the world.
+    *
+    * @method Phaser.Physics.P2#removeConstraint
+    * @param {Phaser.Physics.P2.Constraint} constraint - The Constraint to be removed from the World.
+    * @return {Phaser.Physics.P2.Constraint} The Constraint that was removed.
+    */
+    removeConstraint: function (constraint) {
+
+        this.world.removeConstraint(constraint);
+
+        this.onConstraintRemoved.dispatch(constraint);
+
+        return constraint;
+
+    },
+
+    /**
+    * Adds a Contact Material to the world.
+    *
+    * @method Phaser.Physics.P2#addContactMaterial
+    * @param {Phaser.Physics.P2.ContactMaterial} material - The Contact Material to be added to the World.
+    * @return {Phaser.Physics.P2.ContactMaterial} The Contact Material that was added.
+    */
+    addContactMaterial: function (material) {
+
+        this.world.addContactMaterial(material);
+
+        this.onContactMaterialAdded.dispatch(material);
+
+        return material;
+
+    },
+
+    /**
+    * Removes a Contact Material from the world.
+    *
+    * @method Phaser.Physics.P2#removeContactMaterial
+    * @param {Phaser.Physics.P2.ContactMaterial} material - The Contact Material to be removed from the World.
+    * @return {Phaser.Physics.P2.ContactMaterial} The Contact Material that was removed.
+    */
+    removeContactMaterial: function (material) {
+
+        this.world.removeContactMaterial(material);
+
+        this.onContactMaterialRemoved.dispatch(material);
+
+        return material;
+
+    },
+
+    /**
+    * Gets a Contact Material based on the two given Materials.
+    *
+    * @method Phaser.Physics.P2#getContactMaterial
+    * @param {Phaser.Physics.P2.Material} materialA - The first Material to search for.
+    * @param {Phaser.Physics.P2.Material} materialB - The second Material to search for.
+    * @return {Phaser.Physics.P2.ContactMaterial|boolean} The Contact Material or false if none was found matching the Materials given.
+    */
+    getContactMaterial: function (materialA, materialB) {
+
+        return this.world.getContactMaterial(materialA, materialB);
+
+    },
+
+    /**
+    * Sets the given Material against all Shapes owned by all the Bodies in the given array.
+    *
+    * @method Phaser.Physics.P2#setMaterial
+    * @param {Phaser.Physics.P2.Material} material - The Material to be applied to the given Bodies.
+    * @param {array<Phaser.Physics.P2.Body>} bodies - An Array of Body objects that the given Material will be set on.
+    */
+    setMaterial: function (material, bodies) {
+
+        var i = bodies.length;
+
+        while (i--)
+        {
+            bodies[i].setMaterial(material);
+        }
+
+    },
+
+    /**
+    * Creates a Material. Materials are applied to Shapes owned by a Body and can be set with Body.setMaterial().
+    * Materials are a way to control what happens when Shapes collide. Combine unique Materials together to create Contact Materials.
+    * Contact Materials have properties such as friction and restitution that allow for fine-grained collision control between different Materials.
+    *
+    * @method Phaser.Physics.P2#createMaterial
+    * @param {string} [name] - Optional name of the Material. Each Material has a unique ID but string names are handy for debugging.
+    * @param {Phaser.Physics.P2.Body} [body] - Optional Body. If given it will assign the newly created Material to the Body shapes.
+    * @return {Phaser.Physics.P2.Material} The Material that was created. This is also stored in Phaser.Physics.P2.materials.
+    */
+    createMaterial: function (name, body) {
+
+        name = name || '';
+
+        var material = new Phaser.Physics.P2.Material(name);
+
+        this.materials.push(material);
+
+        if (typeof body !== 'undefined')
+        {
+            body.setMaterial(material);
+        }
+
+        return material;
+
+    },
+
+    /**
+    * Creates a Contact Material from the two given Materials. You can then edit the properties of the Contact Material directly.
+    *
+    * @method Phaser.Physics.P2#createContactMaterial
+    * @param {Phaser.Physics.P2.Material} [materialA] - The first Material to create the ContactMaterial from. If undefined it will create a new Material object first.
+    * @param {Phaser.Physics.P2.Material} [materialB] - The second Material to create the ContactMaterial from. If undefined it will create a new Material object first.
+    * @param {object} [options] - Material options object.
+    * @return {Phaser.Physics.P2.ContactMaterial} The Contact Material that was created.
+    */
+    createContactMaterial: function (materialA, materialB, options) {
+
+        if (typeof materialA === 'undefined') { materialA = this.createMaterial(); }
+        if (typeof materialB === 'undefined') { materialB = this.createMaterial(); }
+
+        var contact = new Phaser.Physics.P2.ContactMaterial(materialA, materialB, options);
+
+        return this.addContactMaterial(contact);
+
+    },
+
+    /**
+    * Populates and returns an array with references to of all current Bodies in the world.
+    *
+    * @method Phaser.Physics.P2#getBodies
+    * @return {array<Phaser.Physics.P2.Body>} An array containing all current Bodies in the world.
+    */
+    getBodies: function () {
+
+        var output = [];
+        var i = this.world.bodies.length;
+
+        while (i--)
+        {
+            output.push(this.world.bodies[i].parent);
+        }
+
+        return output;
+
+    },
+
+    /**
+    * Checks the given object to see if it has a p2.Body and if so returns it.
+    *
+    * @method Phaser.Physics.P2#getBody
+    * @param {object} object - The object to check for a p2.Body on.
+    * @return {p2.Body} The p2.Body, or null if not found.
+    */
+    getBody: function (object) {
+
+        if (object instanceof p2.Body)
+        {
+            //  Native p2 body
+            return object;
+        }
+        else if (object instanceof Phaser.Physics.P2.Body)
+        {
+            //  Phaser P2 Body
+            return object.data;
+        }
+        else if (object['body'] && object['body'].type === Phaser.Physics.P2JS)
+        {
+            //  Sprite, TileSprite, etc
+            return object.body.data;
+        }
+
+        return null;
+
+    },
+
+    /**
+    * Populates and returns an array of all current Springs in the world.
+    *
+    * @method Phaser.Physics.P2#getSprings
+    * @return {array<Phaser.Physics.P2.Spring>} An array containing all current Springs in the world.
+    */
+    getSprings: function () {
+
+        var output = [];
+        var i = this.world.springs.length;
+
+        while (i--)
+        {
+            output.push(this.world.springs[i].parent);
+        }
+
+        return output;
+
+    },
+
+    /**
+    * Populates and returns an array of all current Constraints in the world.
+    * You will get an array of p2 constraints back. This can be of mixed types, for example the array may contain
+    * PrismaticConstraints, RevoluteConstraints or any other valid p2 constraint type.
+    *
+    * @method Phaser.Physics.P2#getConstraints
+    * @return {array<Phaser.Physics.P2.Constraint>} An array containing all current Constraints in the world.
+    */
+    getConstraints: function () {
+
+        var output = [];
+        var i = this.world.constraints.length;
+
+        while (i--)
+        {
+            output.push(this.world.constraints[i]);
+        }
+
+        return output;
+
+    },
+
+    /**
+    * Test if a world point overlaps bodies. You will get an array of actual P2 bodies back. You can find out which Sprite a Body belongs to
+    * (if any) by checking the Body.parent.sprite property. Body.parent is a Phaser.Physics.P2.Body property.
+    *
+    * @method Phaser.Physics.P2#hitTest
+    * @param {Phaser.Point} worldPoint - Point to use for intersection tests. The points values must be in world (pixel) coordinates.
+    * @param {Array<Phaser.Physics.P2.Body|Phaser.Sprite|p2.Body>} [bodies] - A list of objects to check for intersection. If not given it will check Phaser.Physics.P2.world.bodies (i.e. all world bodies)
+    * @param {number} [precision=5] - Used for matching against particles and lines. Adds some margin to these infinitesimal objects.
+    * @param {boolean} [filterStatic=false] - If true all Static objects will be removed from the results array.
+    * @return {Array} Array of bodies that overlap the point.
+    */
+    hitTest: function (worldPoint, bodies, precision, filterStatic) {
+
+        if (typeof bodies === 'undefined') { bodies = this.world.bodies; }
+        if (typeof precision === 'undefined') { precision = 5; }
+        if (typeof filterStatic === 'undefined') { filterStatic = false; }
+
+        var physicsPosition = [ this.pxmi(worldPoint.x), this.pxmi(worldPoint.y) ];
+
+        var query = [];
+        var i = bodies.length;
+
+        while (i--)
+        {
+            if (bodies[i] instanceof Phaser.Physics.P2.Body && !(filterStatic && bodies[i].data.type === p2.Body.STATIC))
+            {
+                query.push(bodies[i].data);
+            }
+            else if (bodies[i] instanceof p2.Body && bodies[i].parent && !(filterStatic && bodies[i].type === p2.Body.STATIC))
+            {
+                query.push(bodies[i]);
+            }
+            else if (bodies[i] instanceof Phaser.Sprite && bodies[i].hasOwnProperty('body') && !(filterStatic && bodies[i].body.data.type === p2.Body.STATIC))
+            {
+                query.push(bodies[i].body.data);
+            }
+        }
+
+        return this.world.hitTest(physicsPosition, query, precision);
+
+    },
+
+    /**
+    * Converts the current world into a JSON object.
+    *
+    * @method Phaser.Physics.P2#toJSON
+    * @return {object} A JSON representation of the world.
+    */
+    toJSON: function () {
+
+        return this.world.toJSON();
+
+    },
+
+    /**
+    * Creates a new Collision Group and optionally applies it to the given object.
+    * Collision Groups are handled using bitmasks, therefore you have a fixed limit you can create before you need to re-use older groups.
+    *
+    * @method Phaser.Physics.P2#createCollisionGroup
+    * @param {Phaser.Group|Phaser.Sprite} [object] - An optional Sprite or Group to apply the Collision Group to. If a Group is given it will be applied to all top-level children.
+    */
+    createCollisionGroup: function (object) {
+
+        var bitmask = Math.pow(2, this._collisionGroupID);
+
+        if (this.walls.left)
+        {
+            this.walls.left.shapes[0].collisionMask = this.walls.left.shapes[0].collisionMask | bitmask;
+        }
+
+        if (this.walls.right)
+        {
+            this.walls.right.shapes[0].collisionMask = this.walls.right.shapes[0].collisionMask | bitmask;
+        }
+
+        if (this.walls.top)
+        {
+            this.walls.top.shapes[0].collisionMask = this.walls.top.shapes[0].collisionMask | bitmask;
+        }
+
+        if (this.walls.bottom)
+        {
+            this.walls.bottom.shapes[0].collisionMask = this.walls.bottom.shapes[0].collisionMask | bitmask;
+        }
+
+        this._collisionGroupID++;
+
+        var group = new Phaser.Physics.P2.CollisionGroup(bitmask);
+
+        this.collisionGroups.push(group);
+
+        if (object)
+        {
+            this.setCollisionGroup(object, group);
+        }
+
+        return group;
+
+    },
+
+    /**
+    * Sets the given CollisionGroup to be the collision group for all shapes in this Body, unless a shape is specified.
+    * Note that this resets the collisionMask and any previously set groups. See Body.collides() for appending them.
+    *
+    * @method Phaser.Physics.P2y#setCollisionGroup
+    * @param {Phaser.Group|Phaser.Sprite} object - A Sprite or Group to apply the Collision Group to. If a Group is given it will be applied to all top-level children.
+    * @param {Phaser.Physics.CollisionGroup} group - The Collision Group that this Bodies shapes will use.
+    */
+    setCollisionGroup: function (object, group) {
+
+        if (object instanceof Phaser.Group)
+        {
+            for (var i = 0; i < object.total; i++)
+            {
+                if (object.children[i]['body'] && object.children[i]['body'].type === Phaser.Physics.P2JS)
+                {
+                    object.children[i].body.setCollisionGroup(group);
+                }
+            }
+        }
+        else
+        {
+            object.body.setCollisionGroup(group);
+        }
+
+    },
+
+    /**
+    * Creates a linear spring, connecting two bodies. A spring can have a resting length, a stiffness and damping.
+    *
+    * @method Phaser.Physics.P2#createSpring
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyA - First connected body.
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyB - Second connected body.
+    * @param {number} [restLength=1] - Rest length of the spring. A number > 0.
+    * @param {number} [stiffness=100] - Stiffness of the spring. A number >= 0.
+    * @param {number} [damping=1] - Damping of the spring. A number >= 0.
+    * @param {Array} [worldA] - Where to hook the spring to body A in world coordinates. This value is an array by 2 elements, x and y, i.e: [32, 32].
+    * @param {Array} [worldB] - Where to hook the spring to body B in world coordinates. This value is an array by 2 elements, x and y, i.e: [32, 32].
+    * @param {Array} [localA] - Where to hook the spring to body A in local body coordinates. This value is an array by 2 elements, x and y, i.e: [32, 32].
+    * @param {Array} [localB] - Where to hook the spring to body B in local body coordinates. This value is an array by 2 elements, x and y, i.e: [32, 32].
+    * @return {Phaser.Physics.P2.Spring} The spring
+    */
+    createSpring: function (bodyA, bodyB, restLength, stiffness, damping, worldA, worldB, localA, localB) {
+
+        bodyA = this.getBody(bodyA);
+        bodyB = this.getBody(bodyB);
+
+        if (!bodyA || !bodyB)
+        {
+            console.warn('Cannot create Spring, invalid body objects given');
+        }
+        else
+        {
+            return this.addSpring(new Phaser.Physics.P2.Spring(this, bodyA, bodyB, restLength, stiffness, damping, worldA, worldB, localA, localB));
+        }
+
+    },
+
+    /**
+    * Creates a rotational spring, connecting two bodies. A spring can have a resting length, a stiffness and damping.
+    *
+    * @method Phaser.Physics.P2#createRotationalSpring
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyA - First connected body.
+    * @param {Phaser.Sprite|Phaser.Physics.P2.Body|p2.Body} bodyB - Second connected body.
+    * @param {number} [restAngle] - The relative angle of bodies at which the spring is at rest. If not given, it's set to the current relative angle between the bodies.
+    * @param {number} [stiffness=100] - Stiffness of the spring. A number >= 0.
+    * @param {number} [damping=1] - Damping of the spring. A number >= 0.
+    * @return {Phaser.Physics.P2.RotationalSpring} The spring
+    */
+    createRotationalSpring: function (bodyA, bodyB, restAngle, stiffness, damping) {
+
+        bodyA = this.getBody(bodyA);
+        bodyB = this.getBody(bodyB);
+
+        if (!bodyA || !bodyB)
+        {
+            console.warn('Cannot create Rotational Spring, invalid body objects given');
+        }
+        else
+        {
+            return this.addSpring(new Phaser.Physics.P2.RotationalSpring(this, bodyA, bodyB, restAngle, stiffness, damping));
+        }
+
+    },
+
+    /**
+    * Creates a new Body and adds it to the World.
+    *
+    * @method Phaser.Physics.P2#createBody
+    * @param {number} x - The x coordinate of Body.
+    * @param {number} y - The y coordinate of Body.
+    * @param {number} mass - The mass of the Body. A mass of 0 means a 'static' Body is created.
+    * @param {boolean} [addToWorld=false] - Automatically add this Body to the world? (usually false as it won't have any shapes on construction).
+    * @param {object} options - An object containing the build options:
+    * @param {boolean} [options.optimalDecomp=false] - Set to true if you need optimal decomposition. Warning: very slow for polygons with more than 10 vertices.
+    * @param {boolean} [options.skipSimpleCheck=false] - Set to true if you already know that the path is not intersecting itself.
+    * @param {boolean|number} [options.removeCollinearPoints=false] - Set to a number (angle threshold value) to remove collinear points, or false to keep all points.
+    * @param {(number[]|...number)} points - An array of 2d vectors that form the convex or concave polygon.
+    *                                       Either [[0,0], [0,1],...] or a flat array of numbers that will be interpreted as [x,y, x,y, ...],
+    *                                       or the arguments passed can be flat x,y values e.g. `setPolygon(options, x,y, x,y, x,y, ...)` where `x` and `y` are numbers.
+    * @return {Phaser.Physics.P2.Body} The body
+    */
+    createBody: function (x, y, mass, addToWorld, options, data) {
+
+        if (typeof addToWorld === 'undefined') { addToWorld = false; }
+
+        var body = new Phaser.Physics.P2.Body(this.game, null, x, y, mass);
+
+        if (data)
+        {
+            var result = body.addPolygon(options, data);
+
+            if (!result)
+            {
+                return false;
+            }
+        }
+
+        if (addToWorld)
+        {
+            this.world.addBody(body.data);
+        }
+
+        return body;
+
+    },
+
+    /**
+    * Creates a new Particle and adds it to the World.
+    *
+    * @method Phaser.Physics.P2#createParticle
+    * @param {number} x - The x coordinate of Body.
+    * @param {number} y - The y coordinate of Body.
+    * @param {number} mass - The mass of the Body. A mass of 0 means a 'static' Body is created.
+    * @param {boolean} [addToWorld=false] - Automatically add this Body to the world? (usually false as it won't have any shapes on construction).
+    * @param {object} options - An object containing the build options:
+    * @param {boolean} [options.optimalDecomp=false] - Set to true if you need optimal decomposition. Warning: very slow for polygons with more than 10 vertices.
+    * @param {boolean} [options.skipSimpleCheck=false] - Set to true if you already know that the path is not intersecting itself.
+    * @param {boolean|number} [options.removeCollinearPoints=false] - Set to a number (angle threshold value) to remove collinear points, or false to keep all points.
+    * @param {(number[]|...number)} points - An array of 2d vectors that form the convex or concave polygon.
+    *                                       Either [[0,0], [0,1],...] or a flat array of numbers that will be interpreted as [x,y, x,y, ...],
+    *                                       or the arguments passed can be flat x,y values e.g. `setPolygon(options, x,y, x,y, x,y, ...)` where `x` and `y` are numbers.
+    */
+    createParticle: function (x, y, mass, addToWorld, options, data) {
+
+        if (typeof addToWorld === 'undefined') { addToWorld = false; }
+
+        var body = new Phaser.Physics.P2.Body(this.game, null, x, y, mass);
+
+        if (data)
+        {
+            var result = body.addPolygon(options, data);
+
+            if (!result)
+            {
+                return false;
+            }
+        }
+
+        if (addToWorld)
+        {
+            this.world.addBody(body.data);
+        }
+
+        return body;
+
+    },
+
+    /**
+    * Converts all of the polylines objects inside a Tiled ObjectGroup into physics bodies that are added to the world.
+    * Note that the polylines must be created in such a way that they can withstand polygon decomposition.
+    *
+    * @method Phaser.Physics.P2#convertCollisionObjects
+    * @param {Phaser.Tilemap} map - The Tilemap to get the map data from.
+    * @param {number|string|Phaser.TilemapLayer} [layer] - The layer to operate on. If not given will default to map.currentLayer.
+    * @param {boolean} [addToWorld=true] - If true it will automatically add each body to the world.
+    * @return {array} An array of the Phaser.Physics.Body objects that have been created.
+    */
+    convertCollisionObjects: function (map, layer, addToWorld) {
+
+        if (typeof addToWorld === 'undefined') { addToWorld = true; }
+
+        var output = [];
+
+        for (var i = 0, len = map.collision[layer].length; i < len; i++)
+        {
+            // name: json.layers[i].objects[v].name,
+            // x: json.layers[i].objects[v].x,
+            // y: json.layers[i].objects[v].y,
+            // width: json.layers[i].objects[v].width,
+            // height: json.layers[i].objects[v].height,
+            // visible: json.layers[i].objects[v].visible,
+            // properties: json.layers[i].objects[v].properties,
+            // polyline: json.layers[i].objects[v].polyline
+
+            var object = map.collision[layer][i];
+
+            var body = this.createBody(object.x, object.y, 0, addToWorld, {}, object.polyline);
+
+            if (body)
+            {
+                output.push(body);
+            }
+        }
+
+        return output;
+
+    },
+
+    /**
+    * Clears all physics bodies from the given TilemapLayer that were created with `World.convertTilemap`.
+    *
+    * @method Phaser.Physics.P2#clearTilemapLayerBodies
+    * @param {Phaser.Tilemap} map - The Tilemap to get the map data from.
+    * @param {number|string|Phaser.TilemapLayer} [layer] - The layer to operate on. If not given will default to map.currentLayer.
+    */
+    clearTilemapLayerBodies: function (map, layer) {
+
+        layer = map.getLayer(layer);
+
+        var i = map.layers[layer].bodies.length;
+
+        while (i--)
+        {
+            map.layers[layer].bodies[i].destroy();
+        }
+
+        map.layers[layer].bodies.length = 0;
+
+    },
+
+    /**
+    * Goes through all tiles in the given Tilemap and TilemapLayer and converts those set to collide into physics bodies.
+    * Only call this *after* you have specified all of the tiles you wish to collide with calls like Tilemap.setCollisionBetween, etc.
+    * Every time you call this method it will destroy any previously created bodies and remove them from the world.
+    * Therefore understand it's a very expensive operation and not to be done in a core game update loop.
+    *
+    * @method Phaser.Physics.P2#convertTilemap
+    * @param {Phaser.Tilemap} map - The Tilemap to get the map data from.
+    * @param {number|string|Phaser.TilemapLayer} [layer] - The layer to operate on. If not given will default to map.currentLayer.
+    * @param {boolean} [addToWorld=true] - If true it will automatically add each body to the world, otherwise it's up to you to do so.
+    * @param {boolean} [optimize=true] - If true adjacent colliding tiles will be combined into a single body to save processing. However it means you cannot perform specific Tile to Body collision responses.
+    * @return {array} An array of the Phaser.Physics.P2.Body objects that were created.
+    */
+    convertTilemap: function (map, layer, addToWorld, optimize) {
+
+        layer = map.getLayer(layer);
+
+        if (typeof addToWorld === 'undefined') { addToWorld = true; }
+        if (typeof optimize === 'undefined') { optimize = true; }
+
+        //  If the bodies array is already populated we need to nuke it
+        this.clearTilemapLayerBodies(map, layer);
+
+        var width = 0;
+        var sx = 0;
+        var sy = 0;
+
+        for (var y = 0, h = map.layers[layer].height; y < h; y++)
+        {
+            width = 0;
+
+            for (var x = 0, w = map.layers[layer].width; x < w; x++)
+            {
+                var tile = map.layers[layer].data[y][x];
+
+                if (tile && tile.index > -1 && tile.collides)
+                {
+                    if (optimize)
+                    {
+                        var right = map.getTileRight(layer, x, y);
+
+                        if (width === 0)
+                        {
+                            sx = tile.x * tile.width;
+                            sy = tile.y * tile.height;
+                            width = tile.width;
+                        }
+
+                        if (right && right.collides)
+                        {
+                            width += tile.width;
+                        }
+                        else
+                        {
+                            var body = this.createBody(sx, sy, 0, false);
+
+                            body.addRectangle(width, tile.height, width / 2, tile.height / 2, 0);
+
+                            if (addToWorld)
+                            {
+                                this.addBody(body);
+                            }
+
+                            map.layers[layer].bodies.push(body);
+
+                            width = 0;
+                        }
+                    }
+                    else
+                    {
+                        var body = this.createBody(tile.x * tile.width, tile.y * tile.height, 0, false);
+
+                        body.addRectangle(tile.width, tile.height, tile.width / 2, tile.height / 2, 0);
+
+                        if (addToWorld)
+                        {
+                            this.addBody(body);
+                        }
+
+                        map.layers[layer].bodies.push(body);
+                    }
+                }
+            }
+        }
+
+        return map.layers[layer].bodies;
+
+    },
+
+    /**
+    * Convert p2 physics value (meters) to pixel scale.
+    * By default Phaser uses a scale of 20px per meter.
+    * If you need to modify this you can over-ride these functions via the Physics Configuration object.
+    *
+    * @method Phaser.Physics.P2#mpx
+    * @param {number} v - The value to convert.
+    * @return {number} The scaled value.
+    */
+    mpx: function (v) {
+
+        return v *= 20;
+
+    },
+
+    /**
+    * Convert pixel value to p2 physics scale (meters).
+    * By default Phaser uses a scale of 20px per meter.
+    * If you need to modify this you can over-ride these functions via the Physics Configuration object.
+    *
+    * @method Phaser.Physics.P2#pxm
+    * @param {number} v - The value to convert.
+    * @return {number} The scaled value.
+    */
+    pxm: function (v) {
+
+        return v * 0.05;
+
+    },
+
+    /**
+    * Convert p2 physics value (meters) to pixel scale and inverses it.
+    * By default Phaser uses a scale of 20px per meter.
+    * If you need to modify this you can over-ride these functions via the Physics Configuration object.
+    *
+    * @method Phaser.Physics.P2#mpxi
+    * @param {number} v - The value to convert.
+    * @return {number} The scaled value.
+    */
+    mpxi: function (v) {
+
+        return v *= -20;
+
+    },
+
+    /**
+    * Convert pixel value to p2 physics scale (meters) and inverses it.
+    * By default Phaser uses a scale of 20px per meter.
+    * If you need to modify this you can over-ride these functions via the Physics Configuration object.
+    *
+    * @method Phaser.Physics.P2#pxmi
+    * @param {number} v - The value to convert.
+    * @return {number} The scaled value.
+    */
+    pxmi: function (v) {
+
+        return v * -0.05;
+
+    }
+
+};
+
+/**
+* @name Phaser.Physics.P2#friction
+* @property {number} friction - Friction between colliding bodies. This value is used if no matching ContactMaterial is found for a Material pair.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "friction", {
+
+    get: function () {
+
+        return this.world.defaultContactMaterial.friction;
+
+    },
+
+    set: function (value) {
+
+        this.world.defaultContactMaterial.friction = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#restitution
+* @property {number} restitution - Default coefficient of restitution between colliding bodies. This value is used if no matching ContactMaterial is found for a Material pair.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "restitution", {
+
+    get: function () {
+
+        return this.world.defaultContactMaterial.restitution;
+
+    },
+
+    set: function (value) {
+
+        this.world.defaultContactMaterial.restitution = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#contactMaterial
+* @property {p2.ContactMaterial} contactMaterial - The default Contact Material being used by the World.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "contactMaterial", {
+
+    get: function () {
+
+        return this.world.defaultContactMaterial;
+
+    },
+
+    set: function (value) {
+
+        this.world.defaultContactMaterial = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#applySpringForces
+* @property {boolean} applySpringForces - Enable to automatically apply spring forces each step.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "applySpringForces", {
+
+    get: function () {
+
+        return this.world.applySpringForces;
+
+    },
+
+    set: function (value) {
+
+        this.world.applySpringForces = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#applyDamping
+* @property {boolean} applyDamping - Enable to automatically apply body damping each step.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "applyDamping", {
+
+    get: function () {
+
+        return this.world.applyDamping;
+
+    },
+
+    set: function (value) {
+
+        this.world.applyDamping = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#applyGravity
+* @property {boolean} applyGravity - Enable to automatically apply gravity each step.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "applyGravity", {
+
+    get: function () {
+
+        return this.world.applyGravity;
+
+    },
+
+    set: function (value) {
+
+        this.world.applyGravity = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#solveConstraints
+* @property {boolean} solveConstraints - Enable/disable constraint solving in each step.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "solveConstraints", {
+
+    get: function () {
+
+        return this.world.solveConstraints;
+
+    },
+
+    set: function (value) {
+
+        this.world.solveConstraints = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#time
+* @property {boolean} time - The World time.
+* @readonly
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "time", {
+
+    get: function () {
+
+        return this.world.time;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#emitImpactEvent
+* @property {boolean} emitImpactEvent - Set to true if you want to the world to emit the "impact" event. Turning this off could improve performance.
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "emitImpactEvent", {
+
+    get: function () {
+
+        return this.world.emitImpactEvent;
+
+    },
+
+    set: function (value) {
+
+        this.world.emitImpactEvent = value;
+
+    }
+
+});
+
+/**
+* How to deactivate bodies during simulation. Possible modes are: World.NO_SLEEPING, World.BODY_SLEEPING and World.ISLAND_SLEEPING.
+* If sleeping is enabled, you might need to wake up the bodies if they fall asleep when they shouldn't. If you want to enable sleeping in the world, but want to disable it for a particular body, see Body.allowSleep.
+* @name Phaser.Physics.P2#sleepMode
+* @property {number} sleepMode
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "sleepMode", {
+
+    get: function () {
+
+        return this.world.sleepMode;
+
+    },
+
+    set: function (value) {
+
+        this.world.sleepMode = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2#total
+* @property {number} total - The total number of bodies in the world.
+* @readonly
+*/
+Object.defineProperty(Phaser.Physics.P2.prototype, "total", {
+
+    get: function () {
+
+        return this.world.bodies.length;
+
+    }
+
+});
+
+/* jshint noarg: false */
+
+/**
+* @author       Georgios Kaleadis https://github.com/georgiee
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Allow to access a list of created fixture (coming from Body#addPhaserPolygon)
+* which itself parse the input from PhysicsEditor with the custom phaser exporter.
+* You can access fixtures of a Body by a group index or even by providing a fixture Key.
+
+* You can set the fixture key and also the group index for a fixture in PhysicsEditor.
+* This gives you the power to create a complex body built of many fixtures and modify them
+* during runtime (to remove parts, set masks, categories & sensor properties)
+*
+* @class Phaser.Physics.P2.FixtureList
+* @constructor
+* @param {Array} list - A list of fixtures (from Phaser.Physics.P2.Body#addPhaserPolygon)
+*/
+Phaser.Physics.P2.FixtureList = function (list) {
+
+    if (!Array.isArray(list))
+    {
+        list = [list];
+    }
+
+    this.rawList = list;
+    this.init();
+    this.parse(this.rawList);
+
+};
+
+Phaser.Physics.P2.FixtureList.prototype = {
+  
+    /**
+    * @method Phaser.Physics.P2.FixtureList#init
+    */
+    init: function () {
+
+        /**
+        * @property {object} namedFixtures - Collect all fixtures with a key
+        * @private
+        */
+        this.namedFixtures = {};
+
+        /**
+        * @property {Array} groupedFixtures - Collect all given fixtures per group index. Notice: Every fixture with a key also belongs to a group
+        * @private
+        */
+        this.groupedFixtures = [];
+
+        /**
+        * @property {Array} allFixtures - This is a list of everything in this collection
+        * @private
+        */
+        this.allFixtures = [];
+
+    },
+
+    /**
+    * @method Phaser.Physics.P2.FixtureList#setCategory
+    * @param {number} bit - The bit to set as the collision group.
+    * @param {string} fixtureKey - Only apply to the fixture with the given key.
+    */
+    setCategory: function (bit, fixtureKey) {
+
+        var setter = function(fixture) {
+            fixture.collisionGroup = bit;
+        };
+
+        this.getFixtures(fixtureKey).forEach(setter);
+
+    },
+  
+    /**
+    * @method Phaser.Physics.P2.FixtureList#setMask
+    * @param {number} bit - The bit to set as the collision mask
+    * @param {string} fixtureKey - Only apply to the fixture with the given key
+    */
+    setMask: function (bit, fixtureKey) {
+
+        var setter = function(fixture) {
+            fixture.collisionMask = bit;
+        };
+
+        this.getFixtures(fixtureKey).forEach(setter);
+
+    },
+  
+    /**
+    * @method Phaser.Physics.P2.FixtureList#setSensor
+    * @param {boolean} value - sensor true or false
+    * @param {string} fixtureKey - Only apply to the fixture with the given key
+    */
+    setSensor: function (value, fixtureKey) {
+
+        var setter = function(fixture) {
+            fixture.sensor = value;
+        };
+
+        this.getFixtures(fixtureKey).forEach(setter);
+
+    },
+
+    /**
+    * @method Phaser.Physics.P2.FixtureList#setMaterial
+    * @param {Object} material - The contact material for a fixture
+    * @param {string} fixtureKey - Only apply to the fixture with the given key
+    */
+    setMaterial: function (material, fixtureKey) {
+
+        var setter = function(fixture) {
+            fixture.material = material;
+        };
+
+        this.getFixtures(fixtureKey).forEach(setter);
+
+    },
+
+    /**
+    * Accessor to get either a list of specified fixtures by key or the whole fixture list
+    * 
+    * @method Phaser.Physics.P2.FixtureList#getFixtures
+    * @param {array} keys - A list of fixture keys
+    */
+    getFixtures: function (keys) {
+
+        var fixtures = [];
+
+        if (keys)
+        {
+            if (!(keys instanceof Array))
+            {
+                keys = [keys];
+            }
+
+            var self = this;
+            keys.forEach(function(key) {
+                if (self.namedFixtures[key])
+                {
+                    fixtures.push(self.namedFixtures[key]);
+                }
+            });
+
+            return this.flatten(fixtures);
+
+        }
+        else
+        {
+            return this.allFixtures;
+        }
+
+    },
+
+    /**
+    * Accessor to get either a single fixture by its key.
+    * 
+    * @method Phaser.Physics.P2.FixtureList#getFixtureByKey
+    * @param {string} key - The key of the fixture.
+    */
+    getFixtureByKey: function (key) {
+
+        return this.namedFixtures[key];
+
+    },
+
+    /**
+    * Accessor to get a group of fixtures by its group index.
+    * 
+    * @method Phaser.Physics.P2.FixtureList#getGroup
+    * @param {number} groupID - The group index.
+    */
+    getGroup: function (groupID) {
+
+        return this.groupedFixtures[groupID];
+
+    },
+  
+    /**
+    * Parser for the output of Phaser.Physics.P2.Body#addPhaserPolygon
+    * 
+    * @method Phaser.Physics.P2.FixtureList#parse
+    */
+    parse: function () {
+
+        var key, value, _ref, _results;
+        _ref = this.rawList;
+        _results = [];
+
+        for (key in _ref)
+        {
+            value = _ref[key];
+
+            if (!isNaN(key - 0))
+            {
+                this.groupedFixtures[key] = this.groupedFixtures[key] || [];
+                this.groupedFixtures[key] = this.groupedFixtures[key].concat(value);
+            }
+            else
+            {
+                this.namedFixtures[key] = this.flatten(value);
+            }
+
+            _results.push(this.allFixtures = this.flatten(this.groupedFixtures));
+        }
+
+    },
+
+    /**
+    * A helper to flatten arrays. This is very useful as the fixtures are nested from time to time due to the way P2 creates and splits polygons.
+    * 
+    * @method Phaser.Physics.P2.FixtureList#flatten
+    * @param {array} array - The array to flatten. Notice: This will happen recursive not shallow.
+    */
+    flatten: function (array) {
+
+        var result, self;
+        result = [];
+        self = arguments.callee;
+        
+        array.forEach(function(item) {
+            return Array.prototype.push.apply(result, (Array.isArray(item) ? self(item) : [item]));
+        });
+
+        return result;
+
+    }
+
+};
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* A PointProxy is an internal class that allows for direct getter/setter style property access to Arrays and TypedArrays.
+*
+* @class Phaser.Physics.P2.PointProxy
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {any} destination - The object to bind to.
+*/
+Phaser.Physics.P2.PointProxy = function (world, destination) {
+
+    this.world = world;
+	this.destination = destination;
+
+};
+
+Phaser.Physics.P2.PointProxy.prototype.constructor = Phaser.Physics.P2.PointProxy;
+
+/**
+* @name Phaser.Physics.P2.PointProxy#x
+* @property {number} x - The x property of this PointProxy get and set in pixels.
+*/
+Object.defineProperty(Phaser.Physics.P2.PointProxy.prototype, "x", {
+
+    get: function () {
+
+        return this.world.mpx(this.destination[0]);
+
+    },
+
+    set: function (value) {
+
+        this.destination[0] = this.world.pxm(value);
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.PointProxy#y
+* @property {number} y - The y property of this PointProxy get and set in pixels.
+*/
+Object.defineProperty(Phaser.Physics.P2.PointProxy.prototype, "y", {
+
+    get: function () {
+
+        return this.world.mpx(this.destination[1]);
+
+    },
+
+    set: function (value) {
+
+        this.destination[1] = this.world.pxm(value);
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.PointProxy#mx
+* @property {number} mx - The x property of this PointProxy get and set in meters.
+*/
+Object.defineProperty(Phaser.Physics.P2.PointProxy.prototype, "mx", {
+
+    get: function () {
+
+        return this.destination[0];
+
+    },
+
+    set: function (value) {
+
+        this.destination[0] = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.PointProxy#my
+* @property {number} my - The x property of this PointProxy get and set in meters.
+*/
+Object.defineProperty(Phaser.Physics.P2.PointProxy.prototype, "my", {
+
+    get: function () {
+
+        return this.destination[1];
+
+    },
+
+    set: function (value) {
+
+        this.destination[1] = value;
+
+    }
+
+});
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* A InversePointProxy is an internal class that allows for direct getter/setter style property access to Arrays and TypedArrays but inverses the values on set.
+*
+* @class Phaser.Physics.P2.InversePointProxy
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {any} destination - The object to bind to.
+*/
+Phaser.Physics.P2.InversePointProxy = function (world, destination) {
+
+    this.world = world;
+	this.destination = destination;
+
+};
+
+Phaser.Physics.P2.InversePointProxy.prototype.constructor = Phaser.Physics.P2.InversePointProxy;
+
+/**
+* @name Phaser.Physics.P2.InversePointProxy#x
+* @property {number} x - The x property of this InversePointProxy get and set in pixels.
+*/
+Object.defineProperty(Phaser.Physics.P2.InversePointProxy.prototype, "x", {
+
+    get: function () {
+
+        return this.world.mpxi(this.destination[0]);
+
+    },
+
+    set: function (value) {
+
+        this.destination[0] = this.world.pxmi(value);
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.InversePointProxy#y
+* @property {number} y - The y property of this InversePointProxy get and set in pixels.
+*/
+Object.defineProperty(Phaser.Physics.P2.InversePointProxy.prototype, "y", {
+
+    get: function () {
+
+        return this.world.mpxi(this.destination[1]);
+
+    },
+
+    set: function (value) {
+
+        this.destination[1] = this.world.pxmi(value);
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.InversePointProxy#mx
+* @property {number} mx - The x property of this InversePointProxy get and set in meters.
+*/
+Object.defineProperty(Phaser.Physics.P2.InversePointProxy.prototype, "mx", {
+
+    get: function () {
+
+        return this.destination[0];
+
+    },
+
+    set: function (value) {
+
+        this.destination[0] = -value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.InversePointProxy#my
+* @property {number} my - The y property of this InversePointProxy get and set in meters.
+*/
+Object.defineProperty(Phaser.Physics.P2.InversePointProxy.prototype, "my", {
+
+    get: function () {
+
+        return this.destination[1];
+
+    },
+
+    set: function (value) {
+
+        this.destination[1] = -value;
+
+    }
+
+});
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* The Physics Body is typically linked to a single Sprite and defines properties that determine how the physics body is simulated.
+* These properties affect how the body reacts to forces, what forces it generates on itself (to simulate friction), and how it reacts to collisions in the scene.
+* In most cases, the properties are used to simulate physical effects. Each body also has its own property values that determine exactly how it reacts to forces and collisions in the scene.
+* By default a single Rectangle shape is added to the Body that matches the dimensions of the parent Sprite. See addShape, removeShape, clearShapes to add extra shapes around the Body.
+* Note: When bound to a Sprite to avoid single-pixel jitters on mobile devices we strongly recommend using Sprite sizes that are even on both axis, i.e. 128x128 not 127x127.
+* Note: When a game object is given a P2 body it has its anchor x/y set to 0.5, so it becomes centered.
+*
+* @class Phaser.Physics.P2.Body
+* @constructor
+* @param {Phaser.Game} game - Game reference to the currently running game.
+* @param {Phaser.Sprite} [sprite] - The Sprite object this physics body belongs to.
+* @param {number} [x=0] - The x coordinate of this Body.
+* @param {number} [y=0] - The y coordinate of this Body.
+* @param {number} [mass=1] - The default mass of this Body (0 = static).
+*/
+Phaser.Physics.P2.Body = function (game, sprite, x, y, mass) {
+
+    sprite = sprite || null;
+    x = x || 0;
+    y = y || 0;
+    if (typeof mass === 'undefined') { mass = 1; }
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to the P2 World.
+    */
+    this.world = game.physics.p2;
+
+    /**
+    * @property {Phaser.Sprite} sprite - Reference to the parent Sprite.
+    */
+    this.sprite = sprite;
+
+    /**
+    * @property {number} type - The type of physics system this body belongs to.
+    */
+    this.type = Phaser.Physics.P2JS;
+
+    /**
+    * @property {Phaser.Point} offset - The offset of the Physics Body from the Sprite x/y position.
+    */
+    this.offset = new Phaser.Point();
+
+    /**
+    * @property {p2.Body} data - The p2 Body data.
+    * @protected
+    */
+    this.data = new p2.Body({ position: [ this.world.pxmi(x), this.world.pxmi(y) ], mass: mass });
+
+    this.data.parent = this;
+
+    /**
+    * @property {Phaser.Physics.P2.InversePointProxy} velocity - The velocity of the body. Set velocity.x to a negative value to move to the left, position to the right. velocity.y negative values move up, positive move down.
+    */
+    this.velocity = new Phaser.Physics.P2.InversePointProxy(this.world, this.data.velocity);
+
+    /**
+    * @property {Phaser.Physics.P2.InversePointProxy} force - The force applied to the body.
+    */
+    this.force = new Phaser.Physics.P2.InversePointProxy(this.world, this.data.force);
+
+    /**
+    * @property {Phaser.Point} gravity - A locally applied gravity force to the Body. Applied directly before the world step. NOTE: Not currently implemented.
+    */
+    this.gravity = new Phaser.Point();
+
+    /**
+    * Dispatched when a first contact is created between shapes in two bodies. This event is fired during the step, so collision has already taken place.
+    * The event will be sent 4 parameters: The body it is in contact with, the shape from this body that caused the contact, the shape from the contact body and the contact equation data array.
+    * @property {Phaser.Signal} onBeginContact
+    */
+    this.onBeginContact = new Phaser.Signal();
+
+    /**
+    * Dispatched when contact ends between shapes in two bodies. This event is fired during the step, so collision has already taken place.
+    * The event will be sent 3 parameters: The body it is in contact with, the shape from this body that caused the contact and the shape from the contact body.
+    * @property {Phaser.Signal} onEndContact
+    */
+    this.onEndContact = new Phaser.Signal();
+
+    /**
+    * @property {array} collidesWith - Array of CollisionGroups that this Bodies shapes collide with.
+    */
+    this.collidesWith = [];
+
+    /**
+    * @property {boolean} removeNextStep - To avoid deleting this body during a physics step, and causing all kinds of problems, set removeNextStep to true to have it removed in the next preUpdate.
+    */
+    this.removeNextStep = false;
+
+    /**
+    * @property {Phaser.Physics.P2.BodyDebug} debugBody - Reference to the debug body.
+    */
+    this.debugBody = null;
+
+    /**
+    * @property {boolean} dirty - Internally used by Sprite.x/y
+    */
+    this.dirty = false;
+
+    /**
+    * @property {boolean} _collideWorldBounds - Internal var that determines if this Body collides with the world bounds or not.
+    * @private
+    */
+    this._collideWorldBounds = true;
+
+    /**
+    * @property {object} _bodyCallbacks - Array of Body callbacks.
+    * @private
+    */
+    this._bodyCallbacks = {};
+
+    /**
+    * @property {object} _bodyCallbackContext - Array of Body callback contexts.
+    * @private
+    */
+    this._bodyCallbackContext = {};
+
+    /**
+    * @property {object} _groupCallbacks - Array of Group callbacks.
+    * @private
+    */
+    this._groupCallbacks = {};
+
+    /**
+    * @property {object} _bodyCallbackContext - Array of Grouo callback contexts.
+    * @private
+    */
+    this._groupCallbackContext = {};
+
+    /**
+    * @property {boolean} _reset - Internal var.
+    * @private
+    */
+    this._reset = false;
+
+    //  Set-up the default shape
+    if (sprite)
+    {
+        this.setRectangleFromSprite(sprite);
+
+        if (sprite.exists)
+        {
+            this.game.physics.p2.addBody(this);
+        }
+    }
+
+};
+
+Phaser.Physics.P2.Body.prototype = {
+
+    /**
+    * Sets a callback to be fired any time a shape in this Body impacts with a shape in the given Body. The impact test is performed against body.id values.
+    * The callback will be sent 4 parameters: This body, the body that impacted, the Shape in this body and the shape in the impacting body.
+    * Note that the impact event happens after collision resolution, so it cannot be used to prevent a collision from happening.
+    * It also happens mid-step. So do not destroy a Body during this callback, instead set safeDestroy to true so it will be killed on the next preUpdate.
+    *
+    * @method Phaser.Physics.P2.Body#createBodyCallback
+    * @param {Phaser.Sprite|Phaser.TileSprite|Phaser.Physics.P2.Body|p2.Body} object - The object to send impact events for.
+    * @param {function} callback - The callback to fire on impact. Set to null to clear a previously set callback.
+    * @param {object} callbackContext - The context under which the callback will fire.
+    */
+    createBodyCallback: function (object, callback, callbackContext) {
+
+        var id = -1;
+
+        if (object['id'])
+        {
+            id = object.id;
+        }
+        else if (object['body'])
+        {
+            id = object.body.id;
+        }
+
+        if (id > -1)
+        {
+            if (callback === null)
+            {
+                delete (this._bodyCallbacks[id]);
+                delete (this._bodyCallbackContext[id]);
+            }
+            else
+            {
+                this._bodyCallbacks[id] = callback;
+                this._bodyCallbackContext[id] = callbackContext;
+            }
+        }
+
+    },
+
+    /**
+    * Sets a callback to be fired any time this Body impacts with the given Group. The impact test is performed against shape.collisionGroup values.
+    * The callback will be sent 4 parameters: This body, the body that impacted, the Shape in this body and the shape in the impacting body.
+    * This callback will only fire if this Body has been assigned a collision group.
+    * Note that the impact event happens after collision resolution, so it cannot be used to prevent a collision from happening.
+    * It also happens mid-step. So do not destroy a Body during this callback, instead set safeDestroy to true so it will be killed on the next preUpdate.
+    *
+    * @method Phaser.Physics.P2.Body#createGroupCallback
+    * @param {Phaser.Physics.CollisionGroup} group - The Group to send impact events for.
+    * @param {function} callback - The callback to fire on impact. Set to null to clear a previously set callback.
+    * @param {object} callbackContext - The context under which the callback will fire.
+    */
+    createGroupCallback: function (group, callback, callbackContext) {
+
+        if (callback === null)
+        {
+            delete (this._groupCallbacks[group.mask]);
+            delete (this._groupCallbacksContext[group.mask]);
+        }
+        else
+        {
+            this._groupCallbacks[group.mask] = callback;
+            this._groupCallbackContext[group.mask] = callbackContext;
+        }
+
+    },
+
+    /**
+    * Gets the collision bitmask from the groups this body collides with.
+    *
+    * @method Phaser.Physics.P2.Body#getCollisionMask
+    * @return {number} The bitmask.
+    */
+    getCollisionMask: function () {
+
+        var mask = 0;
+
+        if (this._collideWorldBounds)
+        {
+            mask = this.game.physics.p2.boundsCollisionGroup.mask;
+        }
+
+        for (var i = 0; i < this.collidesWith.length; i++)
+        {
+            mask = mask | this.collidesWith[i].mask;
+        }
+
+        return mask;
+
+    },
+
+    /**
+    * Updates the collisionMask.
+    *
+    * @method Phaser.Physics.P2.Body#updateCollisionMask
+    * @param {p2.Shape} [shape] - An optional Shape. If not provided the collision group will be added to all Shapes in this Body.
+    */
+    updateCollisionMask: function (shape) {
+
+        var mask = this.getCollisionMask();
+
+        if (typeof shape === 'undefined')
+        {
+            for (var i = this.data.shapes.length - 1; i >= 0; i--)
+            {
+                this.data.shapes[i].collisionMask = mask;
+            }
+        }
+        else
+        {
+            shape.collisionMask = mask;
+        }
+
+    },
+
+    /**
+    * Sets the given CollisionGroup to be the collision group for all shapes in this Body, unless a shape is specified.
+    * This also resets the collisionMask.
+    *
+    * @method Phaser.Physics.P2.Body#setCollisionGroup
+    * @param {Phaser.Physics.CollisionGroup} group - The Collision Group that this Bodies shapes will use.
+    * @param {p2.Shape} [shape] - An optional Shape. If not provided the collision group will be added to all Shapes in this Body.
+    */
+    setCollisionGroup: function (group, shape) {
+
+        var mask = this.getCollisionMask();
+
+        if (typeof shape === 'undefined')
+        {
+            for (var i = this.data.shapes.length - 1; i >= 0; i--)
+            {
+                this.data.shapes[i].collisionGroup = group.mask;
+                this.data.shapes[i].collisionMask = mask;
+            }
+        }
+        else
+        {
+            shape.collisionGroup = group.mask;
+            shape.collisionMask = mask;
+        }
+
+    },
+
+    /**
+    * Clears the collision data from the shapes in this Body. Optionally clears Group and/or Mask.
+    *
+    * @method Phaser.Physics.P2.Body#clearCollision
+    * @param {boolean} [clearGroup=true] - Clear the collisionGroup value from the shape/s?
+    * @param {boolean} [clearMask=true] - Clear the collisionMask value from the shape/s?
+    * @param {p2.Shape} [shape] - An optional Shape. If not provided the collision data will be cleared from all Shapes in this Body.
+    */
+    clearCollision: function (clearGroup, clearMask, shape) {
+
+        if (typeof clearGroup === 'undefined') { clearGroup = true; }
+        if (typeof clearMask === 'undefined') { clearMask = true; }
+
+        if (typeof shape === 'undefined')
+        {
+            for (var i = this.data.shapes.length - 1; i >= 0; i--)
+            {
+                if (clearGroup)
+                {
+                    this.data.shapes[i].collisionGroup = null;
+                }
+
+                if (clearMask)
+                {
+                    this.data.shapes[i].collisionMask = null;
+                }
+            }
+        }
+        else
+        {
+            if (clearGroup)
+            {
+                shape.collisionGroup = null;
+            }
+
+            if (clearMask)
+            {
+                shape.collisionMask = null;
+            }
+        }
+
+        if (clearGroup)
+        {
+            this.collidesWith.length = 0;
+        }
+
+    },
+
+    /**
+    * Adds the given CollisionGroup, or array of CollisionGroups, to the list of groups that this body will collide with and updates the collision masks.
+    *
+    * @method Phaser.Physics.P2.Body#collides
+    * @param {Phaser.Physics.CollisionGroup|array} group - The Collision Group or Array of Collision Groups that this Bodies shapes will collide with.
+    * @param {function} [callback] - Optional callback that will be triggered when this Body impacts with the given Group.
+    * @param {object} [callbackContext] - The context under which the callback will be called.
+    * @param {p2.Shape} [shape] - An optional Shape. If not provided the collision mask will be added to all Shapes in this Body.
+    */
+    collides: function (group, callback, callbackContext, shape) {
+
+        if (Array.isArray(group))
+        {
+            for (var i = 0; i < group.length; i++)
+            {
+                if (this.collidesWith.indexOf(group[i]) === -1)
+                {
+                    this.collidesWith.push(group[i]);
+
+                    if (callback)
+                    {
+                        this.createGroupCallback(group[i], callback, callbackContext);
+                    }
+                }
+            }
+        }
+        else
+        {
+            if (this.collidesWith.indexOf(group) === -1)
+            {
+                this.collidesWith.push(group);
+
+                if (callback)
+                {
+                    this.createGroupCallback(group, callback, callbackContext);
+                }
+            }
+        }
+
+        var mask = this.getCollisionMask();
+
+        if (typeof shape === 'undefined')
+        {
+            for (var i = this.data.shapes.length - 1; i >= 0; i--)
+            {
+                this.data.shapes[i].collisionMask = mask;
+            }
+        }
+        else
+        {
+            shape.collisionMask = mask;
+        }
+
+    },
+
+    /**
+    * Moves the shape offsets so their center of mass becomes the body center of mass.
+    *
+    * @method Phaser.Physics.P2.Body#adjustCenterOfMass
+    */
+    adjustCenterOfMass: function () {
+
+        this.data.adjustCenterOfMass();
+        this.shapeChanged();
+
+    },
+
+    /**
+    * Apply damping, see http://code.google.com/p/bullet/issues/detail?id=74 for details.
+    *
+    * @method Phaser.Physics.P2.Body#applyDamping
+    * @param {number} dt - Current time step.
+    */
+    applyDamping: function (dt) {
+
+        this.data.applyDamping(dt);
+
+    },
+
+    /**
+    * Apply force to a world point. This could for example be a point on the RigidBody surface. Applying force this way will add to Body.force and Body.angularForce.
+    *
+    * @method Phaser.Physics.P2.Body#applyForce
+    * @param {Float32Array|Array} force - The force vector to add.
+    * @param {number} worldX - The world x point to apply the force on.
+    * @param {number} worldY - The world y point to apply the force on.
+    */
+    applyForce: function (force, worldX, worldY) {
+
+        this.data.applyForce(force, [this.world.pxmi(worldX), this.world.pxmi(worldY)]);
+
+    },
+
+    /**
+    * Sets the force on the body to zero.
+    *
+    * @method Phaser.Physics.P2.Body#setZeroForce
+    */
+    setZeroForce: function () {
+
+        this.data.setZeroForce();
+
+    },
+
+    /**
+    * If this Body is dynamic then this will zero its angular velocity.
+    *
+    * @method Phaser.Physics.P2.Body#setZeroRotation
+    */
+    setZeroRotation: function () {
+
+        this.data.angularVelocity = 0;
+
+    },
+
+    /**
+    * If this Body is dynamic then this will zero its velocity on both axis.
+    *
+    * @method Phaser.Physics.P2.Body#setZeroVelocity
+    */
+    setZeroVelocity: function () {
+
+        this.data.velocity[0] = 0;
+        this.data.velocity[1] = 0;
+
+    },
+
+    /**
+    * Sets the Body damping and angularDamping to zero.
+    *
+    * @method Phaser.Physics.P2.Body#setZeroDamping
+    */
+    setZeroDamping: function () {
+
+        this.data.damping = 0;
+        this.data.angularDamping = 0;
+
+    },
+
+    /**
+    * Transform a world point to local body frame.
+    *
+    * @method Phaser.Physics.P2.Body#toLocalFrame
+    * @param {Float32Array|Array} out - The vector to store the result in.
+    * @param {Float32Array|Array} worldPoint - The input world vector.
+    */
+    toLocalFrame: function (out, worldPoint) {
+
+        return this.data.toLocalFrame(out, worldPoint);
+
+    },
+
+    /**
+    * Transform a local point to world frame.
+    *
+    * @method Phaser.Physics.P2.Body#toWorldFrame
+    * @param {Array} out - The vector to store the result in.
+    * @param {Array} localPoint - The input local vector.
+    */
+    toWorldFrame: function (out, localPoint) {
+
+        return this.data.toWorldFrame(out, localPoint);
+
+    },
+
+    /**
+    * This will rotate the Body by the given speed to the left (counter-clockwise).
+    *
+    * @method Phaser.Physics.P2.Body#rotateLeft
+    * @param {number} speed - The speed at which it should rotate.
+    */
+    rotateLeft: function (speed) {
+
+        this.data.angularVelocity = this.world.pxm(-speed);
+
+    },
+
+    /**
+    * This will rotate the Body by the given speed to the left (clockwise).
+    *
+    * @method Phaser.Physics.P2.Body#rotateRight
+    * @param {number} speed - The speed at which it should rotate.
+    */
+    rotateRight: function (speed) {
+
+        this.data.angularVelocity = this.world.pxm(speed);
+
+    },
+
+    /**
+    * Moves the Body forwards based on its current angle and the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#moveForward
+    * @param {number} speed - The speed at which it should move forwards.
+    */
+    moveForward: function (speed) {
+
+        var magnitude = this.world.pxmi(-speed);
+        var angle = this.data.angle + Math.PI / 2;
+
+        this.data.velocity[0] = magnitude * Math.cos(angle);
+        this.data.velocity[1] = magnitude * Math.sin(angle);
+
+    },
+
+    /**
+    * Moves the Body backwards based on its current angle and the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#moveBackward
+    * @param {number} speed - The speed at which it should move backwards.
+    */
+    moveBackward: function (speed) {
+
+        var magnitude = this.world.pxmi(-speed);
+        var angle = this.data.angle + Math.PI / 2;
+
+        this.data.velocity[0] = -(magnitude * Math.cos(angle));
+        this.data.velocity[1] = -(magnitude * Math.sin(angle));
+
+    },
+
+    /**
+    * Applies a force to the Body that causes it to 'thrust' forwards, based on its current angle and the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#thrust
+    * @param {number} speed - The speed at which it should thrust.
+    */
+    thrust: function (speed) {
+
+        var magnitude = this.world.pxmi(-speed);
+        var angle = this.data.angle + Math.PI / 2;
+
+        this.data.force[0] += magnitude * Math.cos(angle);
+        this.data.force[1] += magnitude * Math.sin(angle);
+
+    },
+
+    /**
+    * Applies a force to the Body that causes it to 'thrust' backwards (in reverse), based on its current angle and the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#reverse
+    * @param {number} speed - The speed at which it should reverse.
+    */
+    reverse: function (speed) {
+
+        var magnitude = this.world.pxmi(-speed);
+        var angle = this.data.angle + Math.PI / 2;
+
+        this.data.force[0] -= magnitude * Math.cos(angle);
+        this.data.force[1] -= magnitude * Math.sin(angle);
+
+    },
+
+    /**
+    * If this Body is dynamic then this will move it to the left by setting its x velocity to the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#moveLeft
+    * @param {number} speed - The speed at which it should move to the left, in pixels per second.
+    */
+    moveLeft: function (speed) {
+
+        this.data.velocity[0] = this.world.pxmi(-speed);
+
+    },
+
+    /**
+    * If this Body is dynamic then this will move it to the right by setting its x velocity to the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#moveRight
+    * @param {number} speed - The speed at which it should move to the right, in pixels per second.
+    */
+    moveRight: function (speed) {
+
+        this.data.velocity[0] = this.world.pxmi(speed);
+
+    },
+
+    /**
+    * If this Body is dynamic then this will move it up by setting its y velocity to the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#moveUp
+    * @param {number} speed - The speed at which it should move up, in pixels per second.
+    */
+    moveUp: function (speed) {
+
+        this.data.velocity[1] = this.world.pxmi(-speed);
+
+    },
+
+    /**
+    * If this Body is dynamic then this will move it down by setting its y velocity to the given speed.
+    * The speed is represented in pixels per second. So a value of 100 would move 100 pixels in 1 second (1000ms).
+    *
+    * @method Phaser.Physics.P2.Body#moveDown
+    * @param {number} speed - The speed at which it should move down, in pixels per second.
+    */
+    moveDown: function (speed) {
+
+        this.data.velocity[1] = this.world.pxmi(speed);
+
+    },
+
+    /**
+    * Internal method. This is called directly before the sprites are sent to the renderer and after the update function has finished.
+    *
+    * @method Phaser.Physics.P2.Body#preUpdate
+    * @protected
+    */
+    preUpdate: function () {
+
+        this.dirty = true;
+
+        if (this.removeNextStep)
+        {
+            this.removeFromWorld();
+            this.removeNextStep = false;
+        }
+
+    },
+
+    /**
+    * Internal method. This is called directly before the sprites are sent to the renderer and after the update function has finished.
+    *
+    * @method Phaser.Physics.P2.Body#postUpdate
+    * @protected
+    */
+    postUpdate: function () {
+
+        this.sprite.x = this.world.mpxi(this.data.position[0]);
+        this.sprite.y = this.world.mpxi(this.data.position[1]);
+
+        if (!this.fixedRotation)
+        {
+            this.sprite.rotation = this.data.angle;
+        }
+
+        if (this.debugBody)
+        {
+            this.debugBody.updateSpriteTransform();
+        }
+
+        this.dirty = false;
+
+    },
+
+    /**
+    * Resets the Body force, velocity (linear and angular) and rotation. Optionally resets damping and mass.
+    *
+    * @method Phaser.Physics.P2.Body#reset
+    * @param {number} x - The new x position of the Body.
+    * @param {number} y - The new x position of the Body.
+    * @param {boolean} [resetDamping=false] - Resets the linear and angular damping.
+    * @param {boolean} [resetMass=false] - Sets the Body mass back to 1.
+    */
+    reset: function (x, y, resetDamping, resetMass) {
+
+        if (typeof resetDamping === 'undefined') { resetDamping = false; }
+        if (typeof resetMass === 'undefined') { resetMass = false; }
+
+        this.setZeroForce();
+        this.setZeroVelocity();
+        this.setZeroRotation();
+
+        if (resetDamping)
+        {
+            this.setZeroDamping();
+        }
+
+        if (resetMass)
+        {
+            this.mass = 1;
+        }
+
+        this.x = x;
+        this.y = y;
+
+    },
+
+    /**
+    * Adds this physics body to the world.
+    *
+    * @method Phaser.Physics.P2.Body#addToWorld
+    */
+    addToWorld: function () {
+
+        if (this.game.physics.p2._toRemove)
+        {
+            for (var i = 0; i < this.game.physics.p2._toRemove.length; i++)
+            {
+                if (this.game.physics.p2._toRemove[i] === this)
+                {
+                    this.game.physics.p2._toRemove.splice(i, 1);
+                }
+            }
+        }
+
+        if (this.data.world !== this.game.physics.p2.world)
+        {
+            this.game.physics.p2.addBody(this);
+        }
+
+    },
+
+    /**
+    * Removes this physics body from the world.
+    *
+    * @method Phaser.Physics.P2.Body#removeFromWorld
+    */
+    removeFromWorld: function () {
+
+        if (this.data.world === this.game.physics.p2.world)
+        {
+            this.game.physics.p2.removeBodyNextStep(this);
+        }
+
+    },
+
+    /**
+    * Destroys this Body and all references it holds to other objects.
+    *
+    * @method Phaser.Physics.P2.Body#destroy
+    */
+    destroy: function () {
+
+        this.removeFromWorld();
+
+        this.clearShapes();
+
+        this._bodyCallbacks = {};
+        this._bodyCallbackContext = {};
+        this._groupCallbacks = {};
+        this._groupCallbackContext = {};
+
+        if (this.debugBody)
+        {
+            this.debugBody.destroy(true, true);
+        }
+
+        this.debugBody = null;
+
+        if (this.sprite) {
+            this.sprite.body = null;
+            this.sprite = null;
+        }
+
+    },
+
+    /**
+    * Removes all Shapes from this Body.
+    *
+    * @method Phaser.Physics.P2.Body#clearShapes
+    */
+    clearShapes: function () {
+
+        var i = this.data.shapes.length;
+
+        while (i--)
+        {
+            this.data.removeShape(this.data.shapes[i]);
+        }
+
+        this.shapeChanged();
+
+    },
+
+    /**
+    * Add a shape to the body. You can pass a local transform when adding a shape, so that the shape gets an offset and an angle relative to the body center of mass.
+    * Will automatically update the mass properties and bounding radius.
+    * If this Body had a previously set Collision Group you will need to re-apply it to the new Shape this creates.
+    *
+    * @method Phaser.Physics.P2.Body#addShape
+    * @param {p2.Shape} shape - The shape to add to the body.
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Shape} The shape that was added to the body.
+    */
+    addShape: function (shape, offsetX, offsetY, rotation) {
+
+        if (typeof offsetX === 'undefined') { offsetX = 0; }
+        if (typeof offsetY === 'undefined') { offsetY = 0; }
+        if (typeof rotation === 'undefined') { rotation = 0; }
+
+        this.data.addShape(shape, [this.world.pxmi(offsetX), this.world.pxmi(offsetY)], rotation);
+        this.shapeChanged();
+
+        return shape;
+
+    },
+
+    /**
+    * Adds a Circle shape to this Body. You can control the offset from the center of the body and the rotation.
+    *
+    * @method Phaser.Physics.P2.Body#addCircle
+    * @param {number} radius - The radius of this circle (in pixels)
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Circle} The Circle shape that was added to the Body.
+    */
+    addCircle: function (radius, offsetX, offsetY, rotation) {
+
+        var shape = new p2.Circle(this.world.pxm(radius));
+
+        return this.addShape(shape, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Adds a Rectangle shape to this Body. You can control the offset from the center of the body and the rotation.
+    *
+    * @method Phaser.Physics.P2.Body#addRectangle
+    * @param {number} width - The width of the rectangle in pixels.
+    * @param {number} height - The height of the rectangle in pixels.
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Rectangle} The Rectangle shape that was added to the Body.
+    */
+    addRectangle: function (width, height, offsetX, offsetY, rotation) {
+
+        var shape = new p2.Rectangle(this.world.pxm(width), this.world.pxm(height));
+
+        return this.addShape(shape, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Adds a Plane shape to this Body. The plane is facing in the Y direction. You can control the offset from the center of the body and the rotation.
+    *
+    * @method Phaser.Physics.P2.Body#addPlane
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Plane} The Plane shape that was added to the Body.
+    */
+    addPlane: function (offsetX, offsetY, rotation) {
+
+        var shape = new p2.Plane();
+
+        return this.addShape(shape, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Adds a Particle shape to this Body. You can control the offset from the center of the body and the rotation.
+    *
+    * @method Phaser.Physics.P2.Body#addParticle
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Particle} The Particle shape that was added to the Body.
+    */
+    addParticle: function (offsetX, offsetY, rotation) {
+
+        var shape = new p2.Particle();
+
+        return this.addShape(shape, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Adds a Line shape to this Body.
+    * The line shape is along the x direction, and stretches from [-length/2, 0] to [length/2,0].
+    * You can control the offset from the center of the body and the rotation.
+    *
+    * @method Phaser.Physics.P2.Body#addLine
+    * @param {number} length - The length of this line (in pixels)
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Line} The Line shape that was added to the Body.
+    */
+    addLine: function (length, offsetX, offsetY, rotation) {
+
+        var shape = new p2.Line(this.world.pxm(length));
+
+        return this.addShape(shape, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Adds a Capsule shape to this Body.
+    * You can control the offset from the center of the body and the rotation.
+    *
+    * @method Phaser.Physics.P2.Body#addCapsule
+    * @param {number} length - The distance between the end points in pixels.
+    * @param {number} radius - Radius of the capsule in pixels.
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Capsule} The Capsule shape that was added to the Body.
+    */
+    addCapsule: function (length, radius, offsetX, offsetY, rotation) {
+
+        var shape = new p2.Capsule(this.world.pxm(length), this.world.pxm(radius));
+
+        return this.addShape(shape, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Reads a polygon shape path, and assembles convex shapes from that and puts them at proper offset points. The shape must be simple and without holes.
+    * This function expects the x.y values to be given in pixels. If you want to provide them at p2 world scales then call Body.data.fromPolygon directly.
+    *
+    * @method Phaser.Physics.P2.Body#addPolygon
+    * @param {object} options - An object containing the build options:
+    * @param {boolean} [options.optimalDecomp=false] - Set to true if you need optimal decomposition. Warning: very slow for polygons with more than 10 vertices.
+    * @param {boolean} [options.skipSimpleCheck=false] - Set to true if you already know that the path is not intersecting itself.
+    * @param {boolean|number} [options.removeCollinearPoints=false] - Set to a number (angle threshold value) to remove collinear points, or false to keep all points.
+    * @param {(number[]|...number)} points - An array of 2d vectors that form the convex or concave polygon.
+    *                                       Either [[0,0], [0,1],...] or a flat array of numbers that will be interpreted as [x,y, x,y, ...],
+    *                                       or the arguments passed can be flat x,y values e.g. `setPolygon(options, x,y, x,y, x,y, ...)` where `x` and `y` are numbers.
+    * @return {boolean} True on success, else false.
+    */
+    addPolygon: function (options, points) {
+
+        options = options || {};
+
+        if (!Array.isArray(points))
+        {
+            points = Array.prototype.slice.call(arguments, 1);
+        }
+
+        var path = [];
+
+        //  Did they pass in a single array of points?
+        if (points.length === 1 && Array.isArray(points[0]))
+        {
+            path = points[0].slice(0);
+        }
+        else if (Array.isArray(points[0]))
+        {
+            path = points.slice();
+        }
+        else if (typeof points[0] === 'number')
+        {
+            //  We've a list of numbers
+            for (var i = 0, len = points.length; i < len; i += 2)
+            {
+                path.push([points[i], points[i + 1]]);
+            }
+        }
+
+        //  top and tail
+        var idx = path.length - 1;
+
+        if (path[idx][0] === path[0][0] && path[idx][1] === path[0][1])
+        {
+            path.pop();
+        }
+
+        //  Now process them into p2 values
+        for (var p = 0; p < path.length; p++)
+        {
+            path[p][0] = this.world.pxmi(path[p][0]);
+            path[p][1] = this.world.pxmi(path[p][1]);
+        }
+
+        var result = this.data.fromPolygon(path, options);
+
+        this.shapeChanged();
+
+        return result;
+
+    },
+
+    /**
+    * Remove a shape from the body. Will automatically update the mass properties and bounding radius.
+    *
+    * @method Phaser.Physics.P2.Body#removeShape
+    * @param {p2.Circle|p2.Rectangle|p2.Plane|p2.Line|p2.Particle} shape - The shape to remove from the body.
+    * @return {boolean} True if the shape was found and removed, else false.
+    */
+    removeShape: function (shape) {
+
+		var result = this.data.removeShape(shape);
+
+		this.shapeChanged();
+
+        return result;
+    },
+
+    /**
+    * Clears any previously set shapes. Then creates a new Circle shape and adds it to this Body.
+    * If this Body had a previously set Collision Group you will need to re-apply it to the new Shape this creates.
+    *
+    * @method Phaser.Physics.P2.Body#setCircle
+    * @param {number} radius - The radius of this circle (in pixels)
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    */
+    setCircle: function (radius, offsetX, offsetY, rotation) {
+
+        this.clearShapes();
+
+        return this.addCircle(radius, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Clears any previously set shapes. The creates a new Rectangle shape at the given size and offset, and adds it to this Body.
+    * If you wish to create a Rectangle to match the size of a Sprite or Image see Body.setRectangleFromSprite.
+    * If this Body had a previously set Collision Group you will need to re-apply it to the new Shape this creates.
+    *
+    * @method Phaser.Physics.P2.Body#setRectangle
+    * @param {number} [width=16] - The width of the rectangle in pixels.
+    * @param {number} [height=16] - The height of the rectangle in pixels.
+    * @param {number} [offsetX=0] - Local horizontal offset of the shape relative to the body center of mass.
+    * @param {number} [offsetY=0] - Local vertical offset of the shape relative to the body center of mass.
+    * @param {number} [rotation=0] - Local rotation of the shape relative to the body center of mass, specified in radians.
+    * @return {p2.Rectangle} The Rectangle shape that was added to the Body.
+    */
+    setRectangle: function (width, height, offsetX, offsetY, rotation) {
+
+        if (typeof width === 'undefined') { width = 16; }
+        if (typeof height === 'undefined') { height = 16; }
+
+        this.clearShapes();
+
+        return this.addRectangle(width, height, offsetX, offsetY, rotation);
+
+    },
+
+    /**
+    * Clears any previously set shapes.
+    * Then creates a Rectangle shape sized to match the dimensions and orientation of the Sprite given.
+    * If no Sprite is given it defaults to using the parent of this Body.
+    * If this Body had a previously set Collision Group you will need to re-apply it to the new Shape this creates.
+    *
+    * @method Phaser.Physics.P2.Body#setRectangleFromSprite
+    * @param {Phaser.Sprite|Phaser.Image} [sprite] - The Sprite on which the Rectangle will get its dimensions.
+    * @return {p2.Rectangle} The Rectangle shape that was added to the Body.
+    */
+    setRectangleFromSprite: function (sprite) {
+
+        if (typeof sprite === 'undefined') { sprite = this.sprite; }
+
+        this.clearShapes();
+
+        return this.addRectangle(sprite.width, sprite.height, 0, 0, sprite.rotation);
+
+    },
+
+    /**
+    * Adds the given Material to all Shapes that belong to this Body.
+    * If you only wish to apply it to a specific Shape in this Body then provide that as the 2nd parameter.
+    *
+    * @method Phaser.Physics.P2.Body#setMaterial
+    * @param {Phaser.Physics.P2.Material} material - The Material that will be applied.
+    * @param {p2.Shape} [shape] - An optional Shape. If not provided the Material will be added to all Shapes in this Body.
+    */
+    setMaterial: function (material, shape) {
+
+        if (typeof shape === 'undefined')
+        {
+            for (var i = this.data.shapes.length - 1; i >= 0; i--)
+            {
+                this.data.shapes[i].material = material;
+            }
+        }
+        else
+        {
+            shape.material = material;
+        }
+
+    },
+
+    /**
+    * Updates the debug draw if any body shapes change.
+    *
+    * @method Phaser.Physics.P2.Body#shapeChanged
+    */
+    shapeChanged: function() {
+
+        if (this.debugBody)
+        {
+            this.debugBody.draw();
+        }
+
+    },
+
+    /**
+    * Reads the shape data from a physics data file stored in the Game.Cache and adds it as a polygon to this Body.
+    * The shape data format is based on the custom phaser export in.
+    *
+    * @method Phaser.Physics.P2.Body#addPhaserPolygon
+    * @param {string} key - The key of the Physics Data file as stored in Game.Cache.
+    * @param {string} object - The key of the object within the Physics data file that you wish to load the shape data from.
+    */
+    addPhaserPolygon: function (key, object) {
+
+        var data = this.game.cache.getPhysicsData(key, object);
+        var createdFixtures = [];
+
+        //  Cycle through the fixtures
+        for (var i = 0; i < data.length; i++)
+        {
+            var fixtureData = data[i];
+            var shapesOfFixture = this.addFixture(fixtureData);
+
+            //  Always add to a group
+            createdFixtures[fixtureData.filter.group] = createdFixtures[fixtureData.filter.group] || [];
+            createdFixtures[fixtureData.filter.group] = createdFixtures[fixtureData.filter.group].concat(shapesOfFixture);
+
+            //  if (unique) fixture key is provided
+            if (fixtureData.fixtureKey)
+            {
+                createdFixtures[fixtureData.fixtureKey] = shapesOfFixture;
+            }
+        }
+
+        this.data.aabbNeedsUpdate = true;
+        this.shapeChanged();
+
+        return createdFixtures;
+
+    },
+
+    /**
+    * Add a polygon fixture. This is used during #loadPolygon.
+    *
+    * @method Phaser.Physics.P2.Body#addFixture
+    * @param {string} fixtureData - The data for the fixture. It contains: isSensor, filter (collision) and the actual polygon shapes.
+    * @return {array} An array containing the generated shapes for the given polygon.
+    */
+    addFixture: function (fixtureData) {
+
+        var generatedShapes = [];
+
+        if (fixtureData.circle)
+        {
+            var shape = new p2.Circle(this.world.pxm(fixtureData.circle.radius));
+            shape.collisionGroup = fixtureData.filter.categoryBits;
+            shape.collisionMask = fixtureData.filter.maskBits;
+            shape.sensor = fixtureData.isSensor;
+
+            var offset = p2.vec2.create();
+            offset[0] = this.world.pxmi(fixtureData.circle.position[0] - this.sprite.width/2);
+            offset[1] = this.world.pxmi(fixtureData.circle.position[1] - this.sprite.height/2);
+
+            this.data.addShape(shape, offset);
+            generatedShapes.push(shape);
+        }
+        else
+        {
+            var polygons = fixtureData.polygons;
+            var cm = p2.vec2.create();
+
+            for (var i = 0; i < polygons.length; i++)
+            {
+                var shapes = polygons[i];
+                var vertices = [];
+
+                for (var s = 0; s < shapes.length; s += 2)
+                {
+                    vertices.push([ this.world.pxmi(shapes[s]), this.world.pxmi(shapes[s + 1]) ]);
+                }
+
+                var shape = new p2.Convex(vertices);
+
+                //  Move all vertices so its center of mass is in the local center of the convex
+                for (var j = 0; j !== shape.vertices.length; j++)
+                {
+                    var v = shape.vertices[j];
+                    p2.vec2.sub(v, v, shape.centerOfMass);
+                }
+
+                p2.vec2.scale(cm, shape.centerOfMass, 1);
+
+                cm[0] -= this.world.pxmi(this.sprite.width / 2);
+                cm[1] -= this.world.pxmi(this.sprite.height / 2);
+
+                shape.updateTriangles();
+                shape.updateCenterOfMass();
+                shape.updateBoundingRadius();
+
+                shape.collisionGroup = fixtureData.filter.categoryBits;
+                shape.collisionMask = fixtureData.filter.maskBits;
+                shape.sensor = fixtureData.isSensor;
+
+                this.data.addShape(shape, cm);
+
+                generatedShapes.push(shape);
+            }
+        }
+
+        return generatedShapes;
+
+    },
+
+    /**
+    * Reads the shape data from a physics data file stored in the Game.Cache and adds it as a polygon to this Body.
+    *
+    * @method Phaser.Physics.P2.Body#loadPolygon
+    * @param {string} key - The key of the Physics Data file as stored in Game.Cache.
+    * @param {string} object - The key of the object within the Physics data file that you wish to load the shape data from.
+    * @return {boolean} True on success, else false.
+    */
+    loadPolygon: function (key, object) {
+
+        var data = this.game.cache.getPhysicsData(key, object);
+
+        //  We've multiple Convex shapes, they should be CCW automatically
+        var cm = p2.vec2.create();
+
+        for (var i = 0; i < data.length; i++)
+        {
+            var vertices = [];
+
+            for (var s = 0; s < data[i].shape.length; s += 2)
+            {
+                vertices.push([ this.world.pxmi(data[i].shape[s]), this.world.pxmi(data[i].shape[s + 1]) ]);
+            }
+
+            var c = new p2.Convex(vertices);
+
+            // Move all vertices so its center of mass is in the local center of the convex
+            for (var j = 0; j !== c.vertices.length; j++)
+            {
+                var v = c.vertices[j];
+                p2.vec2.sub(v, v, c.centerOfMass);
+            }
+
+            p2.vec2.scale(cm, c.centerOfMass, 1);
+
+            cm[0] -= this.world.pxmi(this.sprite.width / 2);
+            cm[1] -= this.world.pxmi(this.sprite.height / 2);
+
+            c.updateTriangles();
+            c.updateCenterOfMass();
+            c.updateBoundingRadius();
+
+            this.data.addShape(c, cm);
+        }
+
+        this.data.aabbNeedsUpdate = true;
+        this.shapeChanged();
+
+        return true;
+
+    }
+
+};
+
+Phaser.Physics.P2.Body.prototype.constructor = Phaser.Physics.P2.Body;
+
+/**
+ * Dynamic body. Dynamic bodies body can move and respond to collisions and forces.
+ * @property DYNAMIC
+ * @type {Number}
+ * @static
+ */
+Phaser.Physics.P2.Body.DYNAMIC = 1;
+
+/**
+ * Static body. Static bodies do not move, and they do not respond to forces or collision.
+ * @property STATIC
+ * @type {Number}
+ * @static
+ */
+Phaser.Physics.P2.Body.STATIC = 2;
+
+/**
+ * Kinematic body. Kinematic bodies only moves according to its .velocity, and does not respond to collisions or force.
+ * @property KINEMATIC
+ * @type {Number}
+ * @static
+ */
+Phaser.Physics.P2.Body.KINEMATIC = 4;
+
+/**
+* @name Phaser.Physics.P2.Body#static
+* @property {boolean} static - Returns true if the Body is static. Setting Body.static to 'false' will make it dynamic.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "static", {
+
+    get: function () {
+
+        return (this.data.type === Phaser.Physics.P2.Body.STATIC);
+
+    },
+
+    set: function (value) {
+
+        if (value && this.data.type !== Phaser.Physics.P2.Body.STATIC)
+        {
+            this.data.type = Phaser.Physics.P2.Body.STATIC;
+            this.mass = 0;
+        }
+        else if (!value && this.data.type === Phaser.Physics.P2.Body.STATIC)
+        {
+            this.data.type = Phaser.Physics.P2.Body.DYNAMIC;
+
+            if (this.mass === 0)
+            {
+                this.mass = 1;
+            }
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#dynamic
+* @property {boolean} dynamic - Returns true if the Body is dynamic. Setting Body.dynamic to 'false' will make it static.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "dynamic", {
+
+    get: function () {
+
+        return (this.data.type === Phaser.Physics.P2.Body.DYNAMIC);
+
+    },
+
+    set: function (value) {
+
+        if (value && this.data.type !== Phaser.Physics.P2.Body.DYNAMIC)
+        {
+            this.data.type = Phaser.Physics.P2.Body.DYNAMIC;
+
+            if (this.mass === 0)
+            {
+                this.mass = 1;
+            }
+        }
+        else if (!value && this.data.type === Phaser.Physics.P2.Body.DYNAMIC)
+        {
+            this.data.type = Phaser.Physics.P2.Body.STATIC;
+            this.mass = 0;
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#kinematic
+* @property {boolean} kinematic - Returns true if the Body is kinematic. Setting Body.kinematic to 'false' will make it static.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "kinematic", {
+
+    get: function () {
+
+        return (this.data.type === Phaser.Physics.P2.Body.KINEMATIC);
+
+    },
+
+    set: function (value) {
+
+        if (value && this.data.type !== Phaser.Physics.P2.Body.KINEMATIC)
+        {
+            this.data.type = Phaser.Physics.P2.Body.KINEMATIC;
+            this.mass = 4;
+        }
+        else if (!value && this.data.type === Phaser.Physics.P2.Body.KINEMATIC)
+        {
+            this.data.type = Phaser.Physics.P2.Body.STATIC;
+            this.mass = 0;
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#allowSleep
+* @property {boolean} allowSleep -
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "allowSleep", {
+
+    get: function () {
+
+        return this.data.allowSleep;
+
+    },
+
+    set: function (value) {
+
+        if (value !== this.data.allowSleep)
+        {
+            this.data.allowSleep = value;
+        }
+
+    }
+
+});
+
+/**
+* The angle of the Body in degrees from its original orientation. Values from 0 to 180 represent clockwise rotation; values from 0 to -180 represent counterclockwise rotation.
+* Values outside this range are added to or subtracted from 360 to obtain a value within the range. For example, the statement Body.angle = 450 is the same as Body.angle = 90.
+* If you wish to work in radians instead of degrees use the property Body.rotation instead. Working in radians is faster as it doesn't have to convert values.
+*
+* @name Phaser.Physics.P2.Body#angle
+* @property {number} angle - The angle of this Body in degrees.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "angle", {
+
+    get: function() {
+
+        return Phaser.Math.wrapAngle(Phaser.Math.radToDeg(this.data.angle));
+
+    },
+
+    set: function(value) {
+
+        this.data.angle = Phaser.Math.degToRad(Phaser.Math.wrapAngle(value));
+
+    }
+
+});
+
+/**
+* Damping is specified as a value between 0 and 1, which is the proportion of velocity lost per second.
+* @name Phaser.Physics.P2.Body#angularDamping
+* @property {number} angularDamping - The angular damping acting acting on the body.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "angularDamping", {
+
+    get: function () {
+
+        return this.data.angularDamping;
+
+    },
+
+    set: function (value) {
+
+        this.data.angularDamping = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#angularForce
+* @property {number} angularForce - The angular force acting on the body.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "angularForce", {
+
+    get: function () {
+
+        return this.data.angularForce;
+
+    },
+
+    set: function (value) {
+
+        this.data.angularForce = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#angularVelocity
+* @property {number} angularVelocity - The angular velocity of the body.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "angularVelocity", {
+
+    get: function () {
+
+        return this.data.angularVelocity;
+
+    },
+
+    set: function (value) {
+
+        this.data.angularVelocity = value;
+
+    }
+
+});
+
+/**
+* Damping is specified as a value between 0 and 1, which is the proportion of velocity lost per second.
+* @name Phaser.Physics.P2.Body#damping
+* @property {number} damping - The linear damping acting on the body in the velocity direction.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "damping", {
+
+    get: function () {
+
+        return this.data.damping;
+
+    },
+
+    set: function (value) {
+
+        this.data.damping = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#fixedRotation
+* @property {boolean} fixedRotation -
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "fixedRotation", {
+
+    get: function () {
+
+        return this.data.fixedRotation;
+
+    },
+
+    set: function (value) {
+
+        if (value !== this.data.fixedRotation)
+        {
+            this.data.fixedRotation = value;
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#inertia
+* @property {number} inertia - The inertia of the body around the Z axis..
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "inertia", {
+
+    get: function () {
+
+        return this.data.inertia;
+
+    },
+
+    set: function (value) {
+
+        this.data.inertia = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#mass
+* @property {number} mass -
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "mass", {
+
+    get: function () {
+
+        return this.data.mass;
+
+    },
+
+    set: function (value) {
+
+        if (value !== this.data.mass)
+        {
+            this.data.mass = value;
+            this.data.updateMassProperties();
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#motionState
+* @property {number} motionState - The type of motion this body has. Should be one of: Body.STATIC (the body does not move), Body.DYNAMIC (body can move and respond to collisions) and Body.KINEMATIC (only moves according to its .velocity).
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "motionState", {
+
+    get: function () {
+
+        return this.data.type;
+
+    },
+
+    set: function (value) {
+
+        if (value !== this.data.type)
+        {
+            this.data.type = value;
+        }
+
+    }
+
+});
+
+/**
+* The angle of the Body in radians.
+* If you wish to work in degrees instead of radians use the Body.angle property instead. Working in radians is faster as it doesn't have to convert values.
+*
+* @name Phaser.Physics.P2.Body#rotation
+* @property {number} rotation - The angle of this Body in radians.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "rotation", {
+
+    get: function() {
+
+        return this.data.angle;
+
+    },
+
+    set: function(value) {
+
+        this.data.angle = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#sleepSpeedLimit
+* @property {number} sleepSpeedLimit - .
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "sleepSpeedLimit", {
+
+    get: function () {
+
+        return this.data.sleepSpeedLimit;
+
+    },
+
+    set: function (value) {
+
+        this.data.sleepSpeedLimit = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#x
+* @property {number} x - The x coordinate of this Body.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "x", {
+
+    get: function () {
+
+        return this.world.mpxi(this.data.position[0]);
+
+    },
+
+    set: function (value) {
+
+        this.data.position[0] = this.world.pxmi(value);
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#y
+* @property {number} y - The y coordinate of this Body.
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "y", {
+
+    get: function () {
+
+        return this.world.mpxi(this.data.position[1]);
+
+    },
+
+    set: function (value) {
+
+        this.data.position[1] = this.world.pxmi(value);
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#id
+* @property {number} id - The Body ID. Each Body that has been added to the World has a unique ID.
+* @readonly
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "id", {
+
+    get: function () {
+
+        return this.data.id;
+
+    }
+
+});
+
+/**
+* @name Phaser.Physics.P2.Body#debug
+* @property {boolean} debug - Enable or disable debug drawing of this body
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "debug", {
+
+    get: function () {
+
+        return (this.debugBody !== null);
+
+    },
+
+    set: function (value) {
+
+        if (value && !this.debugBody)
+        {
+            //  This will be added to the global space
+            this.debugBody = new Phaser.Physics.P2.BodyDebug(this.game, this.data);
+        }
+        else if (!value && this.debugBody)
+        {
+            this.debugBody.destroy();
+            this.debugBody = null;
+        }
+
+    }
+
+});
+
+/**
+* A Body can be set to collide against the World bounds automatically if this is set to true. Otherwise it will leave the World.
+* Note that this only applies if your World has bounds! The response to the collision should be managed via CollisionMaterials.
+* Also note that when you set this it will only effect Body shapes that already exist. If you then add further shapes to your Body
+* after setting this it will *not* proactively set them to collide with the bounds.
+*
+* @name Phaser.Physics.P2.Body#collideWorldBounds
+* @property {boolean} collideWorldBounds - Should the Body collide with the World bounds?
+*/
+Object.defineProperty(Phaser.Physics.P2.Body.prototype, "collideWorldBounds", {
+
+    get: function () {
+
+        return this._collideWorldBounds;
+
+    },
+
+    set: function (value) {
+
+        if (value && !this._collideWorldBounds)
+        {
+            this._collideWorldBounds = true;
+            this.updateCollisionMask();
+        }
+        else if (!value && this._collideWorldBounds)
+        {
+            this._collideWorldBounds = false;
+            this.updateCollisionMask();
+        }
+
+    }
+
+});
+
+/**
+* @author       George https://github.com/georgiee
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Draws a P2 Body to a Graphics instance for visual debugging.
+* Needless to say, for every body you enable debug drawing on, you are adding processor and graphical overhead.
+* So use sparingly and rarely (if ever) in production code.
+*
+* @class Phaser.Physics.P2.BodyDebug
+* @constructor
+* @extends Phaser.Group
+* @param {Phaser.Game} game - Game reference to the currently running game.
+* @param {Phaser.Physics.P2.Body} body - The P2 Body to display debug data for.
+* @param {object} settings - Settings object.
+*/
+Phaser.Physics.P2.BodyDebug = function(game, body, settings) {
+
+    Phaser.Group.call(this, game);
+
+    /**
+    * @property {object} defaultSettings - Default debug settings.
+    * @private
+    */
+    var defaultSettings = {
+        pixelsPerLengthUnit: 20,
+        debugPolygons: false,
+        lineWidth: 1,
+        alpha: 0.5
+    };
+
+    this.settings = Phaser.Utils.extend(defaultSettings, settings);
+
+    /**
+    * @property {number} ppu - Pixels per Length Unit.
+    */
+    this.ppu = this.settings.pixelsPerLengthUnit;
+    this.ppu = -1 * this.ppu;
+
+    /**
+    * @property {Phaser.Physics.P2.Body} body - The P2 Body to display debug data for.
+    */
+    this.body = body;
+
+    /**
+    * @property {Phaser.Graphics} canvas - The canvas to render the debug info to.
+    */
+    this.canvas = new Phaser.Graphics(game);
+
+    this.canvas.alpha = this.settings.alpha;
+
+    this.add(this.canvas);
+
+    this.draw();
+
+    this.updateSpriteTransform();
+
+};
+
+Phaser.Physics.P2.BodyDebug.prototype = Object.create(Phaser.Group.prototype);
+Phaser.Physics.P2.BodyDebug.prototype.constructor = Phaser.Physics.P2.BodyDebug;
+
+Phaser.Utils.extend(Phaser.Physics.P2.BodyDebug.prototype, {
+
+    /**
+    * Core update.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#updateSpriteTransform
+    */
+    updateSpriteTransform: function() {
+
+        this.position.x = this.body.position[0] * this.ppu;
+        this.position.y = this.body.position[1] * this.ppu;
+        this.rotation = this.body.angle;
+
+    },
+
+    /**
+    * Draws the P2 shapes to the Graphics object.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#draw
+    */
+    draw: function() {
+
+        var angle, child, color, i, j, lineColor, lw, obj, offset, sprite, v, verts, vrot, _j, _ref1;
+        obj = this.body;
+        sprite = this.canvas;
+        sprite.clear();
+        color = parseInt(this.randomPastelHex(), 16);
+        lineColor = 0xff0000;
+        lw = this.lineWidth;
+
+        if (obj instanceof p2.Body && obj.shapes.length)
+        {
+            var l = obj.shapes.length;
+
+            i = 0;
+
+            while (i !== l)
+            {
+                child = obj.shapes[i];
+                offset = obj.shapeOffsets[i];
+                angle = obj.shapeAngles[i];
+                offset = offset || 0;
+                angle = angle || 0;
+
+                if (child instanceof p2.Circle)
+                {
+                    this.drawCircle(sprite, offset[0] * this.ppu, offset[1] * this.ppu, angle, child.radius * this.ppu, color, lw);
+                }
+                else if (child instanceof p2.Capsule) {
+                    this.drawCapsule(sprite, offset[0] * this.ppu, offset[1] * this.ppu, angle, child.length * this.ppu, child.radius * this.ppu, lineColor, color, lw);
+                }
+                else if (child instanceof p2.Plane)
+                {
+                    this.drawPlane(sprite, offset[0] * this.ppu, -offset[1] * this.ppu, color, lineColor, lw * 5, lw * 10, lw * 10, this.ppu * 100, angle);
+                }
+                else if (child instanceof p2.Line)
+                {
+                    this.drawLine(sprite, child.length * this.ppu, lineColor, lw);
+                }
+                else if (child instanceof p2.Rectangle)
+                {
+                    this.drawRectangle(sprite, offset[0] * this.ppu, offset[1] * this.ppu, angle, child.width * this.ppu, child.height * this.ppu, lineColor, color, lw);
+                }
+                else if (child instanceof p2.Convex)
+                {
+                    verts = [];
+                    vrot = p2.vec2.create();
+
+                    for (j = _j = 0, _ref1 = child.vertices.length; 0 <= _ref1 ? _j < _ref1 : _j > _ref1; j = 0 <= _ref1 ? ++_j : --_j)
+                    {
+                        v = child.vertices[j];
+                        p2.vec2.rotate(vrot, v, angle);
+                        verts.push([(vrot[0] + offset[0]) * this.ppu, -(vrot[1] + offset[1]) * this.ppu]);
+                    }
+
+                    this.drawConvex(sprite, verts, child.triangles, lineColor, color, lw, this.settings.debugPolygons, [offset[0] * this.ppu, -offset[1] * this.ppu]);
+                }
+
+                i++;
+            }
+        }
+
+    },
+
+    /**
+    * Draws the P2 shapes to the Graphics object.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#drawRectangle
+    */
+    drawRectangle: function(g, x, y, angle, w, h, color, fillColor, lineWidth) {
+
+        if (typeof lineWidth === 'undefined') { lineWidth = 1; }
+        if (typeof color === 'undefined') { color = 0x000000; }
+
+        g.lineStyle(lineWidth, color, 1);
+        g.beginFill(fillColor);
+        g.drawRect(x - w / 2, y - h / 2, w, h);
+    },
+
+    /**
+    * Draws a P2 Circle shape.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#drawCircle
+    */
+    drawCircle: function(g, x, y, angle, radius, color, lineWidth) {
+
+        if (typeof lineWidth === 'undefined') { lineWidth = 1; }
+        if (typeof color === 'undefined') { color = 0xffffff; }
+        g.lineStyle(lineWidth, 0x000000, 1);
+        g.beginFill(color, 1.0);
+        g.drawCircle(x, y, -radius*2);
+        g.endFill();
+        g.moveTo(x, y);
+        g.lineTo(x + radius * Math.cos(-angle), y + radius * Math.sin(-angle));
+
+    },
+
+    /**
+    * Draws a P2 Line shape.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#drawLine
+    */
+    drawLine: function(g, len, color, lineWidth) {
+
+        if (typeof lineWidth === 'undefined') { lineWidth = 1; }
+        if (typeof color === 'undefined') { color = 0x000000; }
+
+        g.lineStyle(lineWidth * 5, color, 1);
+        g.moveTo(-len / 2, 0);
+        g.lineTo(len / 2, 0);
+
+    },
+
+    /**
+    * Draws a P2 Convex shape.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#drawConvex
+    */
+    drawConvex: function(g, verts, triangles, color, fillColor, lineWidth, debug, offset) {
+
+        var colors, i, v, v0, v1, x, x0, x1, y, y0, y1;
+
+        if (typeof lineWidth === 'undefined') { lineWidth = 1; }
+        if (typeof color === 'undefined') { color = 0x000000; }
+
+        if (!debug)
+        {
+            g.lineStyle(lineWidth, color, 1);
+            g.beginFill(fillColor);
+            i = 0;
+
+            while (i !== verts.length)
+            {
+                v = verts[i];
+                x = v[0];
+                y = v[1];
+
+                if (i === 0)
+                {
+                    g.moveTo(x, -y);
+                }
+                else
+                {
+                    g.lineTo(x, -y);
+                }
+
+                i++;
+            }
+
+            g.endFill();
+
+            if (verts.length > 2)
+            {
+                g.moveTo(verts[verts.length - 1][0], -verts[verts.length - 1][1]);
+                return g.lineTo(verts[0][0], -verts[0][1]);
+            }
+        }
+        else
+        {
+            colors = [0xff0000, 0x00ff00, 0x0000ff];
+            i = 0;
+
+            while (i !== verts.length + 1)
+            {
+                v0 = verts[i % verts.length];
+                v1 = verts[(i + 1) % verts.length];
+                x0 = v0[0];
+                y0 = v0[1];
+                x1 = v1[0];
+                y1 = v1[1];
+                g.lineStyle(lineWidth, colors[i % colors.length], 1);
+                g.moveTo(x0, -y0);
+                g.lineTo(x1, -y1);
+                g.drawCircle(x0, -y0, lineWidth * 2);
+                i++;
+            }
+
+            g.lineStyle(lineWidth, 0x000000, 1);
+            return g.drawCircle(offset[0], offset[1], lineWidth * 2);
+        }
+
+    },
+
+    /**
+    * Draws a P2 Path.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#drawPath
+    */
+    drawPath: function(g, path, color, fillColor, lineWidth) {
+
+        var area, i, lastx, lasty, p1x, p1y, p2x, p2y, p3x, p3y, v, x, y;
+        if (typeof lineWidth === 'undefined') { lineWidth = 1; }
+        if (typeof color === 'undefined') { color = 0x000000; }
+
+        g.lineStyle(lineWidth, color, 1);
+
+        if (typeof fillColor === "number")
+        {
+            g.beginFill(fillColor);
+        }
+
+        lastx = null;
+        lasty = null;
+        i = 0;
+
+        while (i < path.length)
+        {
+            v = path[i];
+            x = v[0];
+            y = v[1];
+
+            if (x !== lastx || y !== lasty)
+            {
+                if (i === 0)
+                {
+                    g.moveTo(x, y);
+                }
+                else
+                {
+                    p1x = lastx;
+                    p1y = lasty;
+                    p2x = x;
+                    p2y = y;
+                    p3x = path[(i + 1) % path.length][0];
+                    p3y = path[(i + 1) % path.length][1];
+                    area = ((p2x - p1x) * (p3y - p1y)) - ((p3x - p1x) * (p2y - p1y));
+
+                    if (area !== 0)
+                    {
+                        g.lineTo(x, y);
+                    }
+                }
+                lastx = x;
+                lasty = y;
+            }
+
+            i++;
+
+        }
+
+        if (typeof fillColor === "number")
+        {
+            g.endFill();
+        }
+
+        if (path.length > 2 && typeof fillColor === "number")
+        {
+            g.moveTo(path[path.length - 1][0], path[path.length - 1][1]);
+            g.lineTo(path[0][0], path[0][1]);
+        }
+
+    },
+
+    /**
+    * Draws a P2 Plane shape.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#drawPlane
+    */
+    drawPlane: function(g, x0, x1, color, lineColor, lineWidth, diagMargin, diagSize, maxLength, angle) {
+
+        var max, xd, yd;
+        if (typeof lineWidth === 'undefined') { lineWidth = 1; }
+        if (typeof color === 'undefined') { color = 0xffffff; }
+
+        g.lineStyle(lineWidth, lineColor, 11);
+        g.beginFill(color);
+        max = maxLength;
+
+        g.moveTo(x0, -x1);
+        xd = x0 + Math.cos(angle) * this.game.width;
+        yd = x1 + Math.sin(angle) * this.game.height;
+        g.lineTo(xd, -yd);
+
+        g.moveTo(x0, -x1);
+        xd = x0 + Math.cos(angle) * -this.game.width;
+        yd = x1 + Math.sin(angle) * -this.game.height;
+        g.lineTo(xd, -yd);
+
+    },
+
+    drawCapsule: function(g, x, y, angle, len, radius, color, fillColor, lineWidth) {
+
+        if (typeof lineWidth === 'undefined') { lineWidth = 1; }
+        if (typeof color === 'undefined') { color =  0x000000; }
+
+        g.lineStyle(lineWidth, color, 1);
+
+        // Draw circles at ends
+        var c = Math.cos(angle);
+        var s = Math.sin(angle);
+
+        g.beginFill(fillColor, 1);
+        g.drawCircle(-len/2*c + x, -len/2*s + y, -radius * 2);
+        g.drawCircle( len/2*c + x,  len/2*s + y, -radius * 2);
+        g.endFill();
+
+        // Draw rectangle
+        g.lineStyle(lineWidth, color, 0);
+        g.beginFill(fillColor, 1);
+        g.moveTo(-len/2*c + radius*s + x, -len/2*s + radius*c + y);
+        g.lineTo( len/2*c + radius*s + x,  len/2*s + radius*c + y);
+        g.lineTo( len/2*c - radius*s + x,  len/2*s - radius*c + y);
+        g.lineTo(-len/2*c - radius*s + x, -len/2*s - radius*c + y);
+        g.endFill();
+
+        // Draw lines in between
+        g.lineStyle(lineWidth, color, 1);
+        g.moveTo(-len/2*c + radius*s + x, -len/2*s + radius*c + y);
+        g.lineTo( len/2*c + radius*s + x,  len/2*s + radius*c + y);
+        g.moveTo(-len/2*c - radius*s + x, -len/2*s - radius*c + y);
+        g.lineTo( len/2*c - radius*s + x,  len/2*s - radius*c + y);
+
+    },
+
+    /**
+    * Picks a random pastel color.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#randomPastelHex
+    */
+    randomPastelHex: function() {
+
+        var blue, green, mix, red;
+        mix = [255, 255, 255];
+
+        red = Math.floor(Math.random() * 256);
+        green = Math.floor(Math.random() * 256);
+        blue = Math.floor(Math.random() * 256);
+
+        red = Math.floor((red + 3 * mix[0]) / 4);
+        green = Math.floor((green + 3 * mix[1]) / 4);
+        blue = Math.floor((blue + 3 * mix[2]) / 4);
+
+        return this.rgbToHex(red, green, blue);
+
+    },
+
+    /**
+    * Converts from RGB to Hex.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#rgbToHex
+    */
+    rgbToHex: function(r, g, b) {
+        return this.componentToHex(r) + this.componentToHex(g) + this.componentToHex(b);
+    },
+
+    /**
+    * Component to hex conversion.
+    *
+    * @method Phaser.Physics.P2.BodyDebug#componentToHex
+    */
+    componentToHex: function(c) {
+
+        var hex;
+        hex = c.toString(16);
+
+        if (hex.len === 2)
+        {
+            return hex;
+        }
+        else
+        {
+            return hex + '0';
+        }
+
+    }
+
+});
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Creates a linear spring, connecting two bodies. A spring can have a resting length, a stiffness and damping.
+*
+* @class Phaser.Physics.P2.Spring
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {p2.Body} bodyA - First connected body.
+* @param {p2.Body} bodyB - Second connected body.
+* @param {number} [restLength=1] - Rest length of the spring. A number > 0.
+* @param {number} [stiffness=100] - Stiffness of the spring. A number >= 0.
+* @param {number} [damping=1] - Damping of the spring. A number >= 0.
+* @param {Array} [worldA] - Where to hook the spring to body A in world coordinates. This value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {Array} [worldB] - Where to hook the spring to body B in world coordinates. This value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {Array} [localA] - Where to hook the spring to body A in local body coordinates. This value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {Array} [localB] - Where to hook the spring to body B in local body coordinates. This value is an array with 2 elements matching x and y, i.e: [32, 32].
+*/
+Phaser.Physics.P2.Spring = function (world, bodyA, bodyB, restLength, stiffness, damping, worldA, worldB, localA, localB) {
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = world.game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to P2 World.
+    */
+    this.world = world;
+
+    if (typeof restLength === 'undefined') { restLength = 1; }
+    if (typeof stiffness === 'undefined') { stiffness = 100; }
+    if (typeof damping === 'undefined') { damping = 1; }
+
+    restLength = world.pxm(restLength);
+
+    var options = {
+        restLength: restLength,
+        stiffness: stiffness,
+        damping: damping
+    };
+
+    if (typeof worldA !== 'undefined' && worldA !== null)
+    {
+        options.worldAnchorA = [ world.pxm(worldA[0]), world.pxm(worldA[1]) ];
+    }
+
+    if (typeof worldB !== 'undefined' && worldB !== null)
+    {
+        options.worldAnchorB = [ world.pxm(worldB[0]), world.pxm(worldB[1]) ];
+    }
+
+    if (typeof localA !== 'undefined' && localA !== null)
+    {
+        options.localAnchorA = [ world.pxm(localA[0]), world.pxm(localA[1]) ];
+    }
+
+    if (typeof localB !== 'undefined' && localB !== null)
+    {
+        options.localAnchorB = [ world.pxm(localB[0]), world.pxm(localB[1]) ];
+    }
+
+    /**
+    * @property {p2.LinearSpring} data - The actual p2 spring object.
+    */
+    this.data = new p2.LinearSpring(bodyA, bodyB, options);
+
+    this.data.parent = this;
+
+};
+
+Phaser.Physics.P2.Spring.prototype.constructor = Phaser.Physics.P2.Spring;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Creates a rotational spring, connecting two bodies. A spring can have a resting length, a stiffness and damping.
+*
+* @class Phaser.Physics.P2.RotationalSpring
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {p2.Body} bodyA - First connected body.
+* @param {p2.Body} bodyB - Second connected body.
+* @param {number} [restAngle] - The relative angle of bodies at which the spring is at rest. If not given, it's set to the current relative angle between the bodies.
+* @param {number} [stiffness=100] - Stiffness of the spring. A number >= 0.
+* @param {number} [damping=1] - Damping of the spring. A number >= 0.
+*/
+Phaser.Physics.P2.RotationalSpring = function (world, bodyA, bodyB, restAngle, stiffness, damping) {
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = world.game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to P2 World.
+    */
+    this.world = world;
+
+    if (typeof restAngle === 'undefined') { restAngle = null; }
+    if (typeof stiffness === 'undefined') { stiffness = 100; }
+    if (typeof damping === 'undefined') { damping = 1; }
+
+    if (restAngle)
+    {
+        restAngle = world.pxm(restAngle);
+    }
+
+    var options = {
+        restAngle: restAngle,
+        stiffness: stiffness,
+        damping: damping
+    };
+
+    /**
+    * @property {p2.RotationalSpring} data - The actual p2 spring object.
+    */
+    this.data = new p2.RotationalSpring(bodyA, bodyB, options);
+
+    this.data.parent = this;
+
+};
+
+Phaser.Physics.P2.Spring.prototype.constructor = Phaser.Physics.P2.Spring;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* A P2 Material.
+* 
+* \o/ ~ "Because I'm a Material girl"
+*
+* @class Phaser.Physics.P2.Material
+* @constructor
+* @param {string} name - The user defined name given to this Material.
+*/
+Phaser.Physics.P2.Material = function (name) {
+
+    /**
+    * @property {string} name - The user defined name given to this Material.
+    * @default
+    */
+    this.name = name;
+
+    p2.Material.call(this);
+
+};
+
+Phaser.Physics.P2.Material.prototype = Object.create(p2.Material.prototype);
+Phaser.Physics.P2.Material.prototype.constructor = Phaser.Physics.P2.Material;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Defines a physics material
+*
+* @class Phaser.Physics.P2.ContactMaterial
+* @constructor
+* @param {Phaser.Physics.P2.Material} materialA - First material participating in the contact material.
+* @param {Phaser.Physics.P2.Material} materialB - Second material participating in the contact material.
+* @param {object} [options] - Additional configuration options.
+*/
+Phaser.Physics.P2.ContactMaterial = function (materialA, materialB, options) {
+
+	/**
+	* @property {number} id - The contact material identifier.
+	*/
+
+	/**
+	* @property {Phaser.Physics.P2.Material} materialA - First material participating in the contact material.
+	*/
+
+	/**
+	* @property {Phaser.Physics.P2.Material} materialB - Second material participating in the contact material.
+	*/
+
+	/**
+	* @property {number} [friction=0.3] - Friction to use in the contact of these two materials.
+	*/
+
+	/**
+	* @property {number} [restitution=0.0] - Restitution to use in the contact of these two materials.
+	*/
+
+	/**
+	* @property {number} [stiffness=1e7] - Stiffness of the resulting ContactEquation that this ContactMaterial generate.
+	*/
+
+	/**
+	* @property {number} [relaxation=3] - Relaxation of the resulting ContactEquation that this ContactMaterial generate.
+	*/
+
+	/**
+	* @property {number} [frictionStiffness=1e7] - Stiffness of the resulting FrictionEquation that this ContactMaterial generate.
+	*/
+
+	/**
+	* @property {number} [frictionRelaxation=3] - Relaxation of the resulting FrictionEquation that this ContactMaterial generate.
+	*/
+
+	/**
+	* @property {number} [surfaceVelocity=0] - Will add surface velocity to this material. If bodyA rests on top if bodyB, and the surface velocity is positive, bodyA will slide to the right.
+	*/
+
+    p2.ContactMaterial.call(this, materialA, materialB, options);
+
+};
+
+Phaser.Physics.P2.ContactMaterial.prototype = Object.create(p2.ContactMaterial.prototype);
+Phaser.Physics.P2.ContactMaterial.prototype.constructor = Phaser.Physics.P2.ContactMaterial;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Collision Group
+*
+* @class Phaser.Physics.P2.CollisionGroup
+* @constructor
+* @param {number} bitmask - The CollisionGroup bitmask.
+*/
+Phaser.Physics.P2.CollisionGroup = function (bitmask) {
+
+    /**
+    * @property {number} mask - The CollisionGroup bitmask.
+    */
+    this.mask = bitmask;
+
+};
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* A constraint that tries to keep the distance between two bodies constant.
+*
+* @class Phaser.Physics.P2.DistanceConstraint
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {p2.Body} bodyA - First connected body.
+* @param {p2.Body} bodyB - Second connected body.
+* @param {number} distance - The distance to keep between the bodies.
+* @param {Array} [localAnchorA] - The anchor point for bodyA, defined locally in bodyA frame. Defaults to [0,0].
+* @param {Array} [localAnchorB] - The anchor point for bodyB, defined locally in bodyB frame. Defaults to [0,0].
+* @param {object} [maxForce=Number.MAX_VALUE] - Maximum force to apply.
+*/
+Phaser.Physics.P2.DistanceConstraint = function (world, bodyA, bodyB, distance, localAnchorA, localAnchorB, maxForce) {
+
+    if (typeof distance === 'undefined') { distance = 100; }
+    if (typeof localAnchorA === 'undefined') { localAnchorA = [0, 0]; }
+    if (typeof localAnchorB === 'undefined') { localAnchorB = [0, 0]; }
+    if (typeof maxForce === 'undefined') { maxForce = Number.MAX_VALUE; }
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = world.game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to P2 World.
+    */
+    this.world = world;
+
+    distance = world.pxm(distance);
+
+    localAnchorA = [ world.pxmi(localAnchorA[0]), world.pxmi(localAnchorA[1]) ];
+    localAnchorB = [ world.pxmi(localAnchorB[0]), world.pxmi(localAnchorB[1]) ];
+
+    var options = { distance: distance, localAnchorA: localAnchorA, localAnchorB: localAnchorB, maxForce: maxForce };
+
+    p2.DistanceConstraint.call(this, bodyA, bodyB, options);
+
+};
+
+Phaser.Physics.P2.DistanceConstraint.prototype = Object.create(p2.DistanceConstraint.prototype);
+Phaser.Physics.P2.DistanceConstraint.prototype.constructor = Phaser.Physics.P2.DistanceConstraint;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Connects two bodies at given offset points, letting them rotate relative to each other around this point.
+*
+* @class Phaser.Physics.P2.GearConstraint
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {p2.Body} bodyA - First connected body.
+* @param {p2.Body} bodyB - Second connected body.
+* @param {number} [angle=0] - The relative angle
+* @param {number} [ratio=1] - The gear ratio.
+*/
+Phaser.Physics.P2.GearConstraint = function (world, bodyA, bodyB, angle, ratio) {
+
+    if (typeof angle === 'undefined') { angle = 0; }
+    if (typeof ratio === 'undefined') { ratio = 1; }
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = world.game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to P2 World.
+    */
+    this.world = world;
+
+    var options = { angle: angle, ratio: ratio };
+
+    p2.GearConstraint.call(this, bodyA, bodyB, options);
+
+};
+
+Phaser.Physics.P2.GearConstraint.prototype = Object.create(p2.GearConstraint.prototype);
+Phaser.Physics.P2.GearConstraint.prototype.constructor = Phaser.Physics.P2.GearConstraint;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Locks the relative position between two bodies.
+*
+* @class Phaser.Physics.P2.LockConstraint
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {p2.Body} bodyA - First connected body.
+* @param {p2.Body} bodyB - Second connected body.
+* @param {Array} [offset] - The offset of bodyB in bodyA's frame. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {number} [angle=0] - The angle of bodyB in bodyA's frame.
+* @param {number} [maxForce] - The maximum force that should be applied to constrain the bodies.
+*/
+Phaser.Physics.P2.LockConstraint = function (world, bodyA, bodyB, offset, angle, maxForce) {
+
+    if (typeof offset === 'undefined') { offset = [0, 0]; }
+    if (typeof angle === 'undefined') { angle = 0; }
+    if (typeof maxForce === 'undefined') { maxForce = Number.MAX_VALUE; }
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = world.game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to P2 World.
+    */
+    this.world = world;
+
+    offset = [ world.pxm(offset[0]), world.pxm(offset[1]) ];
+
+    var options = { localOffsetB: offset, localAngleB: angle, maxForce: maxForce };
+
+    p2.LockConstraint.call(this, bodyA, bodyB, options);
+
+};
+
+Phaser.Physics.P2.LockConstraint.prototype = Object.create(p2.LockConstraint.prototype);
+Phaser.Physics.P2.LockConstraint.prototype.constructor = Phaser.Physics.P2.LockConstraint;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Connects two bodies at given offset points, letting them rotate relative to each other around this point.
+*
+* @class Phaser.Physics.P2.PrismaticConstraint
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {p2.Body} bodyA - First connected body.
+* @param {p2.Body} bodyB - Second connected body.
+* @param {boolean} [lockRotation=true] - If set to false, bodyB will be free to rotate around its anchor point.
+* @param {Array} [anchorA] - Body A's anchor point, defined in its own local frame. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {Array} [anchorB] - Body A's anchor point, defined in its own local frame. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {Array} [axis] - An axis, defined in body A frame, that body B's anchor point may slide along. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {number} [maxForce] - The maximum force that should be applied to constrain the bodies.
+*/
+Phaser.Physics.P2.PrismaticConstraint = function (world, bodyA, bodyB, lockRotation, anchorA, anchorB, axis, maxForce) {
+
+    if (typeof lockRotation === 'undefined') { lockRotation = true; }
+    if (typeof anchorA === 'undefined') { anchorA = [0, 0]; }
+    if (typeof anchorB === 'undefined') { anchorB = [0, 0]; }
+    if (typeof axis === 'undefined') { axis = [0, 0]; }
+    if (typeof maxForce === 'undefined') { maxForce = Number.MAX_VALUE; }
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = world.game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to P2 World.
+    */
+    this.world = world;
+
+    anchorA = [ world.pxmi(anchorA[0]), world.pxmi(anchorA[1]) ];
+    anchorB = [ world.pxmi(anchorB[0]), world.pxmi(anchorB[1]) ];
+
+    var options = { localAnchorA: anchorA, localAnchorB: anchorB, localAxisA: axis, maxForce: maxForce, disableRotationalLock: !lockRotation };
+
+    p2.PrismaticConstraint.call(this, bodyA, bodyB, options);
+
+};
+
+Phaser.Physics.P2.PrismaticConstraint.prototype = Object.create(p2.PrismaticConstraint.prototype);
+Phaser.Physics.P2.PrismaticConstraint.prototype.constructor = Phaser.Physics.P2.PrismaticConstraint;
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* Connects two bodies at given offset points, letting them rotate relative to each other around this point.
+* The pivot points are given in world (pixel) coordinates.
+*
+* @class Phaser.Physics.P2.RevoluteConstraint
+* @constructor
+* @param {Phaser.Physics.P2} world - A reference to the P2 World.
+* @param {p2.Body} bodyA - First connected body.
+* @param {Float32Array} pivotA - The point relative to the center of mass of bodyA which bodyA is constrained to. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {p2.Body} bodyB - Second connected body.
+* @param {Float32Array} pivotB - The point relative to the center of mass of bodyB which bodyB is constrained to. The value is an array with 2 elements matching x and y, i.e: [32, 32].
+* @param {number} [maxForce=0] - The maximum force that should be applied to constrain the bodies.
+* @param {Float32Array} [worldPivot=null] - A pivot point given in world coordinates. If specified, localPivotA and localPivotB are automatically computed from this value.
+*/
+Phaser.Physics.P2.RevoluteConstraint = function (world, bodyA, pivotA, bodyB, pivotB, maxForce, worldPivot) {
+
+    if (typeof maxForce === 'undefined') { maxForce = Number.MAX_VALUE; }
+    if (typeof worldPivot === 'undefined') { worldPivot = null; }
+
+    /**
+    * @property {Phaser.Game} game - Local reference to game.
+    */
+    this.game = world.game;
+
+    /**
+    * @property {Phaser.Physics.P2} world - Local reference to P2 World.
+    */
+    this.world = world;
+
+    pivotA = [ world.pxmi(pivotA[0]), world.pxmi(pivotA[1]) ];
+    pivotB = [ world.pxmi(pivotB[0]), world.pxmi(pivotB[1]) ];
+
+    if (worldPivot)
+    {
+        worldPivot = [ world.pxmi(worldPivot[0]), world.pxmi(worldPivot[1]) ];
+    }
+
+    var options = { worldPivot: worldPivot, localPivotA: pivotA, localPivotB: pivotB, maxForce: maxForce };
+
+    p2.RevoluteConstraint.call(this, bodyA, bodyB, options);
+
+};
+
+Phaser.Physics.P2.RevoluteConstraint.prototype = Object.create(p2.RevoluteConstraint.prototype);
+Phaser.Physics.P2.RevoluteConstraint.prototype.constructor = Phaser.Physics.P2.RevoluteConstraint;
 
 /**
 * @author       Richard Davey <rich@photonstorm.com>
@@ -65565,10 +86633,35 @@ Phaser.Tilemap.prototype = {
         }
 
         var sprite;
+        var found = false;
 
         for (var i = 0, len = this.objects[name].length; i < len; i++)
         {
-            if (this.objects[name][i].gid === gid)
+            if (typeof this.objects[name][i].gid !== 'undefined' && typeof gid === 'number')
+            {
+                if (this.objects[name][i].gid === gid)
+                {
+                    found = true;
+                }
+            }
+
+            if (typeof this.objects[name][i].id !== 'undefined' && typeof gid === 'number')
+            {
+                if (this.objects[name][i].id === gid)
+                {
+                    found = true;
+                }
+            }
+
+            if (typeof this.objects[name][i].name !== 'undefined' && typeof gid === 'string')
+            {
+                if (this.objects[name][i].name === gid)
+                {
+                    found = true;
+                }
+            }
+
+            if (found)
             {
                 sprite = new CustomClass(this.game, this.objects[name][i].x, this.objects[name][i].y, key, frame);
 
@@ -65576,6 +86669,9 @@ Phaser.Tilemap.prototype = {
                 sprite.visible = this.objects[name][i].visible;
                 sprite.autoCull = autoCull;
                 sprite.exists = exists;
+
+                sprite.width = this.objects[name][i].width;
+                sprite.height = this.objects[name][i].height;
 
                 if (this.objects[name][i].rotation)
                 {
@@ -66630,9 +87726,10 @@ Phaser.Tilemap.prototype = {
     * @param {number} [tileWidth] - The width of the tiles. If not given the map default is used.
     * @param {number} [tileHeight] - The height of the tiles. If not given the map default is used.
     * @param {number|string|Phaser.TilemapLayer} [layer] - The layer to get the tile from.
+    * @param {boolean} [nonNull=false] - If true getTile won't return null for empty tiles, but a Tile object with an index of -1.
     * @return {Phaser.Tile} The tile at the given coordinates.
     */
-    getTileWorldXY: function (x, y, tileWidth, tileHeight, layer) {
+    getTileWorldXY: function (x, y, tileWidth, tileHeight, layer, nonNull) {
 
         if (typeof tileWidth === 'undefined') { tileWidth = this.tileWidth; }
         if (typeof tileHeight === 'undefined') { tileHeight = this.tileHeight; }
@@ -66642,7 +87739,7 @@ Phaser.Tilemap.prototype = {
         x = this.game.math.snapToFloor(x, tileWidth) / tileWidth;
         y = this.game.math.snapToFloor(y, tileHeight) / tileHeight;
 
-        return this.getTile(x, y, layer);
+        return this.getTile(x, y, layer, nonNull);
 
     },
 
@@ -67087,7 +88184,15 @@ Object.defineProperty(Phaser.Tilemap.prototype, "layer", {
 * By default TilemapLayers have fixedToCamera set to `true`. Changing this will break Camera follow and scrolling behavior.
 *
 * @class Phaser.TilemapLayer
-* @extends {Phaser.Image}
+* @extends PIXI.Sprite
+* @extends Phaser.Component.Core
+* @extends Phaser.Component.Bounds
+* @extends Phaser.Component.BringToTop
+* @extends Phaser.Component.Destroy
+* @extends Phaser.Component.FixedToCamera
+* @extends Phaser.Component.InputEnabled
+* @extends Phaser.Component.Reset
+* @extends Phaser.Component.Smoothed
 * @constructor
 * @param {Phaser.Game} game - Game reference to the currently running game.
 * @param {Phaser.Tilemap} tilemap - The tilemap to which this layer belongs.
@@ -67336,15 +88441,17 @@ Phaser.TilemapLayer = function (game, tilemap, index, width, height) {
 Phaser.TilemapLayer.prototype = Object.create(PIXI.Sprite.prototype);
 Phaser.TilemapLayer.prototype.constructor = Phaser.TilemapLayer;
 
-var components = [
+Phaser.Component.Core.install.call(Phaser.TilemapLayer.prototype, [
     'Bounds',
+    'BringToTop',
     'Destroy',
     'FixedToCamera',
+    'InputEnabled',
     'Reset',
     'Smoothed'
-];
+]);
 
-Phaser.Component.Core.install.call(Phaser.TilemapLayer.prototype, components);
+Phaser.TilemapLayer.prototype.preUpdateCore = Phaser.Component.Core.preUpdate;
 
 /**
 * The shared double-copy canvas, created as needed.
@@ -67381,9 +88488,7 @@ Phaser.TilemapLayer.ensureSharedCopyCanvas = function () {
 */
 Phaser.TilemapLayer.prototype.preUpdate = function() {
 
-    Phaser.Component.Core.preUpdate.call(this);
-
-    return true;
+    return this.preUpdateCore();
 
 };
 
@@ -67395,7 +88500,9 @@ Phaser.TilemapLayer.prototype.preUpdate = function() {
 */
 Phaser.TilemapLayer.prototype.postUpdate = function () {
 
-    Phaser.Component.Core.prototype.postUpdate.call(this);
+    Phaser.Component.FixedToCamera.postUpdate.call(this);
+
+    // this.postUpdateCore();
 
     //  Stops you being able to auto-scroll the camera if it's not following a sprite
     var camera = this.game.camera;
@@ -70273,6 +91380,1034 @@ Object.defineProperty(Phaser.Particles.Arcade.Emitter.prototype, "bottom", {
     }
 
 });
+
+/**
+* @author       Richard Davey <rich@photonstorm.com>
+* @copyright    2015 Photon Storm Ltd.
+* @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+*/
+
+/**
+* A Video object that takes a previously loaded Video from the Phaser Cache and handles playback of it.
+* 
+* Alternatively it takes a getUserMedia feed from an active webcam and streams the contents of that to
+* the Video instead.
+* 
+* This can be applied to a Sprite as a texture. If multiple Sprites share the same Video texture and playback
+* changes (i.e. you pause the video, or seek to a new time) then this change will be seen across all Sprites simultaneously.
+* 
+* If you need each Sprite to be able to play a video fully independently then you will need one Video object per Sprite.
+* Please understand the obvious performance implications of doing this, and the memory required to hold videos in RAM.
+*
+* On some mobile browsers such as iOS Safari, you cannot play a video until the user has explicitly touched the screen.
+* This works in the same way as audio unlocking. Phaser will handle the touch unlocking for you, however unlike with audio
+* it's worth noting that every single Video needs to be touch unlocked, not just the first one. You can use the `changeSource`
+* method to try and work around this limitation, but see the method help for details.
+*
+* Small screen devices, especially iPod and iPhone will launch the video in its own native video player, 
+* outside of the Safari browser. There is no way to avoid this, it's a device imposed limitation.
+*
+* @class Phaser.Video
+* @constructor
+* @param {Phaser.Game} game - A reference to the currently running game.
+* @param {string|null} key - The key of the video file in the Phaser.Cache that this Video object should use. If null a `getUserMedia` video stream will be established instead.
+* @param {boolean} [captureAudio=false] - If the key is null this controls if audio should be captured along with video in the video stream.
+* @param {integer} [width] - If the key is null this width is used to create the video stream. If not provided the video width will be set to the width of the webcam input source.
+* @param {integer} [height] - If the key is null this height is used to create the video stream. If not provided the video height will be set to the height of the webcam input source.
+*/
+Phaser.Video = function (game, key, captureAudio, width, height) {
+
+    if (typeof key === 'undefined') { key = null; }
+    if (typeof captureAudio === 'undefined') { captureAudio = false; }
+
+    /**
+    * @property {Phaser.Game} game - A reference to the currently running game.
+    */
+    this.game = game;
+
+    /**
+    * @property {string} key - The key of the Video in the Cache, if stored there.
+    */
+    this.key = key;
+
+    /**
+    * @property {number} width - The width of the video in pixels.
+    */
+    this.width = (width) ? width : 0;
+
+    /**
+    * @property {number} height - The height of the video in pixels.
+    */
+    this.height = (height) ? height : 0;
+
+    /**
+    * @property {HTMLVideoElement} video - The HTML Video Element that is added to the document.
+    */
+    this.video = null;
+
+    if (key === null)
+    {
+        this.createVideoStream(captureAudio, width, height);
+    }
+    else
+    {
+        var _video = this.game.cache.getVideo(key);
+
+        if (_video.isBlob)
+        {
+            this.createVideoFromBlob(_video.data);
+        }
+        else
+        {
+            this.video = _video.data;
+        }
+
+        this.width = this.video.videoWidth;
+        this.height = this.video.videoHeight;
+    }
+
+    /**
+    * @property {PIXI.BaseTexture} baseTexture - The PIXI.BaseTexture.
+    * @default
+    */
+    this.baseTexture = new PIXI.BaseTexture(this.video);
+
+    this.baseTexture.forceLoaded(this.width, this.height);
+
+    /**
+    * @property {PIXI.Texture} texture - The PIXI.Texture.
+    * @default
+    */
+    this.texture = new PIXI.Texture(this.baseTexture);
+
+    /**
+    * @property {Phaser.Frame} textureFrame - The Frame this video uses for rendering.
+    * @default
+    */
+    this.textureFrame = new Phaser.Frame(0, 0, 0, this.width, this.height, 'video');
+
+    this.texture.setFrame(this.textureFrame);
+
+    /**
+    * @property {number} type - The const type of this object.
+    * @default
+    */
+    this.type = Phaser.VIDEO;
+
+    /**
+    * @property {boolean} disableTextureUpload - If true this video will never send its image data to the GPU when its dirty flag is true. This only applies in WebGL.
+    */
+    this.disableTextureUpload = false;
+
+    /**
+    * @property {Phaser.Signal} onPlay - This signal is dispatched when the Video starts to play. It sends 3 parameters: a reference to the Video object, if the video is set to loop or not and the playback rate.
+    */
+    this.onPlay = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onChangeSource - This signal is dispatched if the Video source is changed. It sends 3 parameters: a reference to the Video object and the new width and height of the new video source.
+    */
+    this.onChangeSource = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onComplete - This signal is dispatched when the Video completes playback, i.e. enters an 'ended' state. Videos set to loop will never dispatch this signal.
+    */
+    this.onComplete = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onAccess - This signal is dispatched if the user allows access to their webcam.
+    */
+    this.onAccess = new Phaser.Signal();
+
+    /**
+    * @property {Phaser.Signal} onError - This signal is dispatched if an error occurs either getting permission to use the webcam (for a Video Stream) or when trying to play back a video file.
+    */
+    this.onError = new Phaser.Signal();
+
+    /**
+    * @property {boolean} touchLocked - true if this video is currently locked awaiting a touch event. This happens on some mobile devices, such as iOS.
+    * @default
+    */
+    this.touchLocked = false;
+
+    /**
+    * @property {MediaStream} videoStream - The Video Stream data. Only set if this Video is streaming from the webcam via `createVideoStream`.
+    */
+    this.videoStream = null;
+
+    /**
+    * A snapshot grabbed from the video. This is initially black. Populate it by calling Video.grab().
+    * When called the BitmapData is updated with a grab taken from the current video playing or active video stream.
+    * If Phaser has been compiled without BitmapData support this property will always be `null`.
+    * 
+    * @property {Phaser.BitmapData} snapshot
+    * @readOnly
+    */
+    this.snapshot = null;
+
+    if (Phaser.BitmapData)
+    {
+        this.snapshot = new Phaser.BitmapData(this.game, '', this.width, this.height);
+    }
+
+    /**
+    * @property {boolean} _codeMuted - Internal mute tracking var.
+    * @private
+    * @default
+    */
+    this._codeMuted = false;
+
+    /**
+    * @property {boolean} _muted - Internal mute tracking var.
+    * @private
+    * @default
+    */
+    this._muted = false;
+
+    /**
+    * @property {boolean} _codePaused - Internal paused tracking var.
+    * @private
+    * @default
+    */
+    this._codePaused = false;
+
+    /**
+    * @property {boolean} _paused - Internal paused tracking var.
+    * @private
+    * @default
+    */
+    this._paused = false;
+
+    /**
+    * @property {boolean} _pending - Internal var tracking play pending.
+    * @private
+    * @default
+    */
+    this._pending = false;
+
+    /**
+    * @property {boolean} _autoplay - Internal var tracking autoplay when changing source.
+    * @private
+    * @default
+    */
+    this._autoplay = false;
+
+    if (!this.game.device.cocoonJS && this.game.device.iOS || (window['PhaserGlobal'] && window['PhaserGlobal'].fakeiOSTouchLock))
+    {
+        this.setTouchLock();
+    }
+    else
+    {
+        if (_video)
+        {
+            _video.locked = false;
+        }
+    }
+
+};
+
+Phaser.Video.prototype = {
+
+    /**
+     * Instead of playing a video file this method allows you to stream video data from an attached webcam.
+     *
+     * As soon as this method is called the user will be prompted by their browser to "Allow" access to the webcam.
+     * If they allow it the webcam feed is directed to this Video. Call `Video.play` to start the stream.
+     *
+     * If they block the webcam the onError signal will be dispatched containing the NavigatorUserMediaError event.
+     *
+     * You can optionally set a width and height for the stream. If set the input will be cropped to these dimensions.
+     * If not given then as soon as the stream has enough data the video dimensions will be changed to match the webcam device.
+     * You can listen for this with the onChangeSource signal.
+     *
+     * @method Phaser.Video#createVideoStream
+     * @param {boolean} [captureAudio=false] - Controls if audio should be captured along with video in the video stream.
+     * @param {integer} [width] - The width is used to create the video stream. If not provided the video width will be set to the width of the webcam input source.
+     * @param {integer} [height] - The height is used to create the video stream. If not provided the video height will be set to the height of the webcam input source.
+     * @return {Phaser.Video} This Video object for method chaining.
+     */
+    createVideoStream: function (captureAudio, width, height) {
+
+        if (typeof captureAudio === 'undefined') { captureAudio = false; }
+        if (typeof width === 'undefined') { width = null; }
+        if (typeof height === 'undefined') { height = null; }
+
+        if (!this.game.device.getUserMedia)
+        {
+            return false;
+        }
+
+        this.video = document.createElement("video");
+        this.video.controls = false;
+        this.video.autoplay = false;
+
+        if (width !== null)
+        {
+            this.video.width = width;
+        }
+
+        if (height !== null)
+        {
+            this.video.height = height;
+        }
+
+        if (!navigator['getUserMedia'])
+        {
+            navigator.getUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
+        }
+
+        var _this = this;
+
+        var _streamStart = function(stream) {
+
+            _this.videoStream = stream;
+
+            _this.video.src = window.URL.createObjectURL(stream);
+
+            _this.video.addEventListener('loadeddata', function (event) { _this.updateTexture(event, width, height); }, true);
+
+            _this.onAccess.dispatch(_this);
+
+        };
+
+        var _streamError = function(e) {
+            _this.onError.dispatch(_this, e);
+        };
+
+        navigator.getUserMedia({ audio: captureAudio, video: true }, _streamStart, _streamError);
+
+        return this;
+
+    },
+
+    /**
+     * Creates a new Video element from the given Blob. The Blob must contain the video data in the correct encoded format.
+     * This method is typically called by the Phaser.Loader and Phaser.Cache for you, but is exposed publicly for convenience.
+     *
+     * @method Phaser.Video#createVideoFromBlob
+     * @param {Blob} blob - The Blob containing the video data: `Blob([new Uint8Array(data)])`
+     * @return {Phaser.Video} This Video object for method chaining.
+     */
+    createVideoFromBlob: function (blob) {
+
+        this.video = document.createElement("video");
+        this.video.controls = false;
+        this.video.autoplay = false;
+        this.video.src = window.URL.createObjectURL(blob);
+
+        this.updateTexture();
+
+        return this;
+
+    },
+
+    /**
+     * Called automatically if the video source changes and updates the internal texture dimensions.
+     * Then dispatches the onChangeSource signal.
+     *
+     * @method Phaser.Video#updateTexture
+     * @param {object} [event] - The event which triggered the texture update.
+     * @param {integer} [width] - The new width of the video. If undefined `video.videoWidth` is used.
+     * @param {integer} [height] - The new height of the video. If undefined `video.videoHeight` is used.
+     */
+    updateTexture: function (event, width, height) {
+
+        var change = false;
+
+        if (typeof width === 'undefined' || width === null) { width = this.video.videoWidth; change = true; }
+        if (typeof height === 'undefined' || height === null) { height = this.video.videoHeight; }
+
+        // if (change)
+        // {
+        //     console.log('updateTexture resizing to webcam', width, height);
+        // }
+        // else
+        // {
+        //     console.log('updateTexture resizing to fixed dimensions', width, height);
+        // }
+
+        this.width = width;
+        this.height = height;
+
+        this.baseTexture.forceLoaded(width, height);
+
+        this.texture.frame.resize(width, height);
+        this.texture.width = width;
+        this.texture.height = height;
+
+        if (this.snapshot)
+        {
+            this.snapshot.resize(width, height);
+        }
+
+        if (change)
+        {
+            this.video.removeEventListener('canplaythrough', this.updateTexture.bind(this));
+
+            this.onChangeSource.dispatch(this, width, height);
+
+            if (this._autoplay)
+            {
+                this.video.play();
+                this.onPlay.dispatch(this, this.loop, this.playbackRate);
+            }
+        }
+
+    },
+
+    /**
+     * Called when the video completes playback (reaches and ended state).
+     * Dispatches the Video.onComplete signal.
+     *
+     * @method Phaser.Video#complete
+     */
+    complete: function () {
+
+        this.onComplete.dispatch(this);
+
+    },
+
+    /**
+     * Starts this video playing if it's not already doing so.
+     *
+     * @method Phaser.Video#play
+     * @param {boolean} [loop=false] - Should the video loop automatically when it reaches the end? Please note that at present some browsers (i.e. Chrome) do not support *seamless* video looping.
+     * @param {number} [playbackRate=1] - The playback rate of the video. 1 is normal speed, 2 is x2 speed, and so on. You cannot set a negative playback rate.
+     * @return {Phaser.Video} This Video object for method chaining.
+     */
+    play: function (loop, playbackRate) {
+
+        if (typeof loop === 'undefined') { loop = false; }
+        if (typeof playbackRate === 'undefined') { playbackRate = 1; }
+
+        if (this.game.sound.onMute)
+        {
+            this.game.sound.onMute.add(this.setMute, this);
+            this.game.sound.onUnMute.add(this.unsetMute, this);
+
+            if (this.game.sound.mute)
+            {
+                this.setMute();
+            }
+        }
+
+        this.game.onPause.add(this.setPause, this);
+        this.game.onResume.add(this.setResume, this);
+
+        this.video.addEventListener('ended', this.complete.bind(this), true);
+
+        if (loop)
+        {
+            this.video.loop = 'loop';
+        }
+        else
+        {
+            this.video.loop = '';
+        }
+
+        this.video.playbackRate = playbackRate;
+
+        if (this.touchLocked)
+        {
+            this._pending = true;
+        }
+        else
+        {
+            this._pending = false;
+
+            this.video.play();
+
+            this.onPlay.dispatch(this, loop, playbackRate);
+        }
+
+        return this;
+
+    },
+
+    /**
+     * Stops the video playing.
+     * 
+     * This removes all locally set signals.
+     * 
+     * If you only wish to pause playback of the video, to resume at a later time, use `Video.paused = true` instead.
+     * If the video hasn't finished downloading calling `Video.stop` will not abort the download. To do that you need to 
+     * call `Video.destroy` instead.
+     *
+     * If you are using a video stream from a webcam then calling Stop will disconnect the MediaStream session and disable the webcam.
+     *
+     * @method Phaser.Video#stop
+     * @return {Phaser.Video} This Video object for method chaining.
+     */
+    stop: function () {
+
+        if (this.game.sound.onMute)
+        {
+            this.game.sound.onMute.remove(this.setMute, this);
+            this.game.sound.onUnMute.remove(this.unsetMute, this);
+        }
+
+        this.game.onPause.remove(this.setPause, this);
+        this.game.onResume.remove(this.setResume, this);
+
+        //  Stream or file?
+
+        if (this.videoStream)
+        {
+            if (this.video.mozSrcObject)
+            {
+                this.video.mozSrcObject.stop();
+                this.video.src = null;
+            }
+            else
+            {
+                this.video.src = "";
+                this.videoStream.stop();
+            }
+
+            this.videoStream = null;
+        }
+        else
+        {
+            this.video.removeEventListener('ended', this.complete.bind(this));
+
+            if (this.touchLocked)
+            {
+                this._pending = false;
+            }
+            else
+            {
+                this.video.pause();
+            }
+        }
+
+        return this;
+
+    },
+
+    /**
+    * Updates the given Display Objects so they use this Video as their texture.
+    * This will replace any texture they will currently have set.
+    *
+    * @method Phaser.Video#add
+    * @param {Phaser.Sprite|Phaser.Sprite[]|Phaser.Image|Phaser.Image[]} object - Either a single Sprite/Image or an Array of Sprites/Images.
+    * @return {Phaser.Video} This Video object for method chaining.
+    */
+    add: function (object) {
+
+        if (Array.isArray(object))
+        {
+            for (var i = 0; i < object.length; i++)
+            {
+                if (object[i]['loadTexture'])
+                {
+                    object[i].loadTexture(this);
+                }
+            }
+        }
+        else
+        {
+            object.loadTexture(this);
+        }
+
+        return this;
+
+    },
+
+    /**
+    * Creates a new Phaser.Image object, assigns this Video to be its texture, adds it to the world then returns it.
+    *
+    * @method Phaser.Video#addToWorld
+    * @param {number} [x=0] - The x coordinate to place the Image at.
+    * @param {number} [y=0] - The y coordinate to place the Image at.
+    * @param {number} [anchorX=0] - Set the x anchor point of the Image. A value between 0 and 1, where 0 is the top-left and 1 is bottom-right.
+    * @param {number} [anchorY=0] - Set the y anchor point of the Image. A value between 0 and 1, where 0 is the top-left and 1 is bottom-right.
+    * @param {number} [scaleX=1] - The horizontal scale factor of the Image. A value of 1 means no scaling. 2 would be twice the size, and so on.
+    * @param {number} [scaleY=1] - The vertical scale factor of the Image. A value of 1 means no scaling. 2 would be twice the size, and so on.
+    * @return {Phaser.Image} The newly added Image object.
+    */
+    addToWorld: function (x, y, anchorX, anchorY, scaleX, scaleY) {
+
+        scaleX = scaleX || 1;
+        scaleY = scaleY || 1;
+
+        var image = this.game.add.image(x, y, this);
+
+        image.anchor.set(anchorX, anchorY);
+        image.scale.set(scaleX, scaleY);
+
+        return image;
+
+    },
+
+    /**
+    * If the game is running in WebGL this will push the texture up to the GPU if it's dirty.
+    * This is called automatically if the Video is being used by a Sprite, otherwise you need to remember to call it in your render function.
+    * If you wish to suppress this functionality set Video.disableTextureUpload to `true`.
+    *
+    * @method Phaser.Video#render
+    */
+    render: function () {
+
+        if (!this.disableTextureUpload && this.playing)
+        {
+            this.baseTexture.dirty();
+        }
+
+    },
+
+    /**
+    * Internal handler called automatically by the Video.mute setter.
+    *
+    * @method Phaser.Video#setMute
+    * @private
+    */
+    setMute: function () {
+
+        if (this._muted)
+        {
+            return;
+        }
+
+        this._muted = true;
+
+        this.video.muted = true;
+
+    },
+
+    /**
+    * Internal handler called automatically by the Video.mute setter.
+    *
+    * @method Phaser.Video#unsetMute
+    * @private
+    */
+    unsetMute: function () {
+
+        if (!this._muted || this._codeMuted)
+        {
+            return;
+        }
+
+        this._muted = false;
+
+        this.video.muted = false;
+
+    },
+
+    /**
+    * Internal handler called automatically by the Video.paused setter.
+    *
+    * @method Phaser.Video#setPause
+    * @private
+    */
+    setPause: function () {
+
+        if (this._paused || this.touchLocked)
+        {
+            return;
+        }
+
+        this._paused = true;
+
+        this.video.pause();
+
+    },
+
+    /**
+    * Internal handler called automatically by the Video.paused setter.
+    *
+    * @method Phaser.Video#setResume
+    * @private
+    */
+    setResume: function () {
+
+        if (!this._paused || this._codePaused || this.touchLocked)
+        {
+            return;
+        }
+
+        this._paused = false;
+
+        if (!this.video.ended)
+        {
+            this.video.play();
+        }
+
+    },
+
+    /**
+     * On some mobile browsers you cannot play a video until the user has explicitly touched the video to allow it.
+     * Phaser handles this via the `setTouchLock` method. However if you have 3 different videos, maybe an "Intro", "Start" and "Game Over"
+     * split into three different Video objects, then you will need the user to touch-unlock every single one of them.
+     * 
+     * You can avoid this by using just one Video object and simply changing the video source. Once a Video element is unlocked it remains
+     * unlocked, even if the source changes. So you can use this to your benefit to avoid forcing the user to 'touch' the video yet again.
+     *
+     * As you'd expect there are limitations. So far we've found that the videos need to be in the same encoding format and bitrate.
+     * This method will automatically handle a change in video dimensions, but if you try swapping to a different bitrate we've found it
+     * cannot render the new video on iOS (desktop browsers cope better).
+     *
+     * When the video source is changed the video file is requested over the network. Listen for the `onChangeSource` signal to know
+     * when the new video has downloaded enough content to be able to be played. Previous settings such as the volume and loop state
+     * are adopted automatically by the new video.
+     *
+     * @method Phaser.Video#changeSource
+     * @param {string} src - The new URL to change the video.src to.
+     * @param {boolean} [autoplay=true] - Should the video play automatically after the source has been updated?
+     * @return {Phaser.Video} This Video object for method chaining.
+     */
+    changeSource: function (src, autoplay) {
+
+        if (typeof autoplay === 'undefined') { autoplay = true; }
+
+        this.video.pause();
+
+        this.video.addEventListener('canplaythrough', this.updateTexture.bind(this), true);
+
+        this.video.src = src;
+
+        this.video.load();
+
+        this._autoplay = autoplay;
+
+        if (!autoplay)
+        {
+            this.paused = true;
+        }
+
+        return this;
+
+    },
+
+    /**
+    * Sets the Input Manager touch callback to be Video.unlock.
+    * Required for iOS video unlocking. Mostly just used internally.
+    * 
+    * @method Phaser.Video#setTouchLock
+    */
+    setTouchLock: function () {
+
+        this.game.input.touch.addTouchLockCallback(this.unlock, this);
+        this.touchLocked = true;
+
+    },
+
+    /**
+    * Enables the video on mobile devices, usually after the first touch.
+    * If the SoundManager hasn't been unlocked then this will automatically unlock that as well.
+    * Only one video can be pending unlock at any one time.
+    * 
+    * @method Phaser.Video#unlock
+    */
+    unlock: function () {
+
+        this.touchLocked = false;
+
+        this.video.play();
+
+        this.onPlay.dispatch(this, this.loop, this.playbackRate);
+
+        var _video = this.game.cache.getVideo(this.key);
+
+        if (!_video.isBlob)
+        {
+            _video.locked = false;
+        }
+
+        return true;
+
+    },
+
+    /**
+     * Grabs the current frame from the Video or Video Stream and renders it to the Video.snapshot BitmapData.
+     *
+     * You can optionally set if the BitmapData should be cleared or not, the alpha and the blend mode of the draw.
+     *
+     * If you need more advanced control over the grabbing them call `Video.snapshot.copy` directly with the same parameters as BitmapData.copy.
+     *
+     * @method Phaser.Video#grab
+     * @param {boolean} [clear=false] - Should the BitmapData be cleared before the Video is grabbed? Unless you are using alpha or a blend mode you can usually leave this set to false.
+     * @param {number} [alpha=1] - The alpha that will be set on the video before drawing. A value between 0 (fully transparent) and 1, opaque.
+     * @param {string} [blendMode=null] - The composite blend mode that will be used when drawing. The default is no blend mode at all. This is a Canvas globalCompositeOperation value such as 'lighter' or 'xor'.
+     * @return {Phaser.BitmapData} A reference to the Video.snapshot BitmapData object for further method chaining.
+     */
+    grab: function (clear, alpha, blendMode) {
+
+        if (typeof clear === 'undefined') { clear = false; }
+        if (typeof alpha === 'undefined') { alpha = 1; }
+        if (typeof blendMode === 'undefined') { blendMode = null; }
+
+        if (this.snapshot === null)
+        {
+            console.warn('Video.grab cannot run because Phaser.BitmapData is unavailable');
+            return;
+        }
+
+        if (clear)
+        {
+            this.snapshot.cls();
+        }
+
+        this.snapshot.copy(this.video, 0, 0, this.width, this.height, 0, 0, this.width, this.height, 0, 0, 0, 1, 1, alpha, blendMode);
+
+        return this.snapshot;
+
+    },
+
+    /**
+     * Destroys the Video object. This calls Video.stop(), then sets the Video src to a blank string and nulls the reference.
+     * If any Sprites are using this Video as their texture it is up to you to manage those.
+     *
+     * @method Phaser.Video#destroy
+     */
+    destroy: function () {
+
+        this.stop();
+
+        this.video.src = '';
+        this.video = null;
+
+        if (this.touchLocked)
+        {
+            this.game.input.touch.removeTouchLockCallback(this.unlock, this);
+        }
+
+    }
+
+};
+
+/**
+* @memberof Phaser.Video
+* @property {number} currentTime - The current time of the video in seconds. If set the video will attempt to seek to that point in time.
+*/
+Object.defineProperty(Phaser.Video.prototype, "currentTime", {
+
+    get: function () {
+
+        return this.video.currentTime;
+
+    },
+
+    set: function (value) {
+
+        this.video.currentTime = value;
+
+    }
+
+});
+
+/**
+* @memberof Phaser.Video
+* @property {number} duration - The duration of the video in seconds.
+* @readOnly
+*/
+Object.defineProperty(Phaser.Video.prototype, "duration", {
+
+    get: function () {
+
+        return this.video.duration;
+
+    }
+
+});
+
+/**
+* @memberof Phaser.Video
+* @property {number} progress - The progress of this video. This is a value between 0 and 1, where 0 is the start and 1 is the end of the video.
+* @readOnly
+*/
+Object.defineProperty(Phaser.Video.prototype, "progress", {
+
+    get: function () {
+
+        return (this.video.currentTime / this.video.duration);
+
+    }
+
+});
+
+/**
+* @name Phaser.Video#mute
+* @property {boolean} mute - Gets or sets the muted state of the Video.
+*/
+Object.defineProperty(Phaser.Video.prototype, "mute", {
+
+    get: function () {
+
+        return this._muted;
+
+    },
+
+    set: function (value) {
+
+        value = value || null;
+
+        if (value)
+        {
+            if (this._muted)
+            {
+                return;
+            }
+
+            this._codeMuted = true;
+            this.setMute();
+        }
+        else
+        {
+            if (!this._muted)
+            {
+                return;
+            }
+
+            this._codeMuted = false;
+            this.unsetMute();
+        }
+    }
+
+});
+
+/**
+* Gets or sets the paused state of the Video.
+* If the video is still touch locked (such as on iOS devices) this call has no effect.
+* 
+* @name Phaser.Video#paused
+* @property {boolean} paused
+*/
+Object.defineProperty(Phaser.Video.prototype, "paused", {
+
+    get: function () {
+
+        return this._paused;
+
+    },
+
+    set: function (value) {
+
+        value = value || null;
+
+        if (this.touchLocked)
+        {
+            return;
+        }
+
+        if (value)
+        {
+            if (this._paused)
+            {
+                return;
+            }
+
+            this._codePaused = true;
+            this.setPause();
+        }
+        else
+        {
+            if (!this._paused)
+            {
+                return;
+            }
+
+            this._codePaused = false;
+            this.setResume();
+        }
+    }
+
+});
+
+/**
+* @name Phaser.Video#volume
+* @property {number} volume - Gets or sets the volume of the Video, a value between 0 and 1. The value given is clamped to the range 0 to 1.
+*/
+Object.defineProperty(Phaser.Video.prototype, "volume", {
+
+    get: function () {
+
+        return this.video.volume;
+
+    },
+
+    set: function (value) {
+
+        if (value < 0)
+        {
+            value = 0;
+        }
+        else if (value > 1)
+        {
+            value = 1;
+        }
+
+        this.video.volume = value;
+
+    }
+
+});
+
+/**
+* @name Phaser.Video#playbackRate
+* @property {number} playbackRate - Gets or sets the playback rate of the Video. This is the speed at which the video is playing.
+*/
+Object.defineProperty(Phaser.Video.prototype, "playbackRate", {
+
+    get: function () {
+
+        return this.video.playbackRate;
+
+    },
+
+    set: function (value) {
+
+        this.video.playbackRate = value;
+
+    }
+
+});
+
+/**
+* Gets or sets if the Video is set to loop.
+* Please note that at present some browsers (i.e. Chrome) do not support *seamless* video looping.
+* 
+* @name Phaser.Video#loop
+* @property {number} loop
+*/
+Object.defineProperty(Phaser.Video.prototype, "loop", {
+
+    get: function () {
+
+        return this.video.loop;
+
+    },
+
+    set: function (value) {
+
+        if (value)
+        {
+            this.video.loop = 'loop';
+        }
+        else
+        {
+            this.video.loop = '';
+        }
+
+    }
+
+});
+
+/**
+* @name Phaser.Video#playing
+* @property {boolean} playing - True if the video is currently playing (and not paused or ended), otherwise false.
+* @readOnly
+*/
+Object.defineProperty(Phaser.Video.prototype, "playing", {
+
+    get: function () {
+
+        return !(this.video.paused && this.video.ended);
+
+    }
+
+});
+
+Phaser.Video.prototype.constructor = Phaser.Video;
 
 /* global Phaser:true */
 /**
