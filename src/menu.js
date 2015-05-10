@@ -25,6 +25,6 @@ define(['phaser'], function(phaser) {
             this.music.stop();
             this.state.start('game_state');
         }
-    }
+    };
     return menu_state;
 });

@@ -32,6 +32,6 @@ define(['phaser'], function(phaser) {
                 this.state.start('menu_state');
             }
         }
-    }
+    };
     return preload_state;
 });
